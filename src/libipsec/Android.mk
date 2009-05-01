@@ -12,7 +12,7 @@ common_SHARED_LIBRARIES = libc libcutils
 L_CFLAGS += -include $(LOCAL_PATH)/../../src/include-glibc/glibc-bugs.h \
   -I$(LOCAL_PATH)/../../src/include-glibc -I$(LOCAL_PATH)/../../src/libipsec \
   -Iexternal/openssl/include -I bionic/libc/private \
-  -DSYSCONFDIR=\"/etc\" -DADMINPORTDIR=\"/var/racoon\" -g -O2
+  -DSYSCONFDIR=\"/data/misc/vpn\" -DADMINPORTDIR=\"/var/racoon\" -g -O2
 
 
 # For libracoon

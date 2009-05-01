@@ -78,6 +78,10 @@ struct localconf {
 	int default_af;			/* default address family */
 
 	int sock_admin;
+#ifdef ANDROID_CHANGES
+	int sock_control;
+	int control_client; /* we handle one client connection only */
+#endif
 	int sock_pfkey;
 	int rtsock;			/* routing socket */
 

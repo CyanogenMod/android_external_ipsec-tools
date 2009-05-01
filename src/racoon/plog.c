@@ -57,6 +57,10 @@
 #endif
 #include <ctype.h>
 #include <err.h>
+#ifdef ANDROID_CHANGES
+#include <cutils/logd.h>
+#define LOG_TAG "racoon"
+#endif
 
 #include "var.h"
 #include "misc.h"
@@ -157,6 +161,9 @@ plogv(int pri, const char *func, struct sockaddr *sa,
 	if (pri > loglevel)
 		return;
 
+#ifdef ANDROID_CHANGES
+    __android_log_vprint(ANDROID_LOG_DEBUG, LOG_TAG, fmt, ap);
+#else
 	newfmt = plog_common(pri, fmt, func);
 
 	VA_COPY(ap_bak, ap);
@@ -172,6 +179,7 @@ plogv(int pri, const char *func, struct sockaddr *sa,
 		else
 			vsyslog(LOG_ALERT, newfmt, ap_bak);
 	}
+#endif
 }
 
 void
@@ -262,4 +270,3 @@ binsanitize(binstr, n)
 	binstr[q++] = '\0';
 	return binstr;
 }
-	

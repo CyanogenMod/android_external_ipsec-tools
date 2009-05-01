@@ -8,7 +8,7 @@
 /* #undef BROKEN_PRINTF */
 
 /* Enable admin port */
-#define ENABLE_ADMINPORT 
+//#define ENABLE_ADMINPORT 
 
 /* Enable dead peer detection */
 /* #undef ENABLE_DPD */

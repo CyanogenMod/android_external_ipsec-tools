@@ -25,7 +25,7 @@ common_C_INCLUDES += $(LOCAL_PATH)/../..
 L_CFLAGS += -include $(LOCAL_PATH)/../../src/include-glibc/glibc-bugs.h \
   -I$(LOCAL_PATH)/../../src/include-glibc -I$(LOCAL_PATH)/../../src/libipsec \
   -I$(LOCAL_PATH)/missing -Iexternal/openssl/include -I bionic/libc/private \
-  -DSYSCONFDIR=\"/etc\" -DADMINPORTDIR=\"/var/racoon\" -g -O2
+  -DSYSCONFDIR=\"/data/misc/vpn\" -g -O2
 
 common_SHARED_LIBRARIES := libipsec
 
@@ -48,7 +48,7 @@ include $(BUILD_STATIC_LIBRARY)
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := $(DAEMON_SRC_FILES)
-LOCAL_C_INCLUDES += $(common_C_INCLUDES)
+LOCAL_C_INCLUDES += $(common_C_INCLUDES) $(KERNEL_HEADERS)
 LOCAL_SHARED_LIBRARIES += $(DAEMON_SHARED_LIBS)
 LOCAL_STATIC_LIBRARIES += $(DAEMON_STATIC_LIBS)
 LOCAL_CFLAGS += $(L_CFLAGS)

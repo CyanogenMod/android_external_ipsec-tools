@@ -1711,7 +1711,7 @@ void yyset_lineno (int line_number  );
 int glob (__const char *__restrict __pattern, int __flags, int *__errfunc, glob_t *__restrict __pglob) {
 	// Just simply open the config file instead.
 	int fd = open(__pattern, O_RDONLY);
-	if (fd > 0) {
+	if (fd != -1) {
 		__pglob->gl_pathc = 1;
 		__pglob->gl_pathv = (char**) malloc(sizeof(char*));
 		__pglob->gl_pathv[0] = __pattern;
