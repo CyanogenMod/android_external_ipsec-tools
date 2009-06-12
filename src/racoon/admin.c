@@ -753,7 +753,7 @@ static int setcerts(cmd)
         }
         buf = NULL;
     }
-    if (get_sockaddr_in((struct sockaddr_in *)&dst, tokens[0], 0) != 0) {
+    if (get_sockaddr_in(tokens[0], 0, (struct sockaddr_in *)&dst) != 0) {
         plog(LLV_ERROR, LOCATION, NULL, "incorrect dest address %s", tokens[0]);
         return -1;
     }
