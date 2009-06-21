@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp.c,v 1.20.6.11 2008/07/11 08:08:41 tteras Exp $	*/
+/*	$NetBSD: isakmp.c,v 1.20.6.13 2008/09/25 09:34:39 vanhu Exp $	*/
 
 /* Id: isakmp.c,v 1.74 2006/05/07 21:32:59 manubsd Exp */
 
@@ -199,9 +199,6 @@ isakmp_handler(so_isakmp)
 		char		buf[sizeof (isakmp) + 4];
 		u_int32_t	non_esp[2];
 		char		lbuf[sizeof(struct udphdr) + 
-#ifdef ANDROID_CHANGES
-#define __linux
-#endif
 #ifdef __linux
 				     sizeof(struct iphdr) + 
 #else
@@ -215,7 +212,7 @@ isakmp_handler(so_isakmp)
 	unsigned int local_len = sizeof(local);
 	int len = 0, extralen = 0;
 	vchar_t *buf = NULL, *tmpbuf = NULL;
-	int error = -1;
+	int error = -1, res;
 
 	/* read message by MSG_PEEK */
 	while ((len = recvfromto(so_isakmp, x.buf, sizeof(x),
@@ -366,11 +363,11 @@ isakmp_handler(so_isakmp)
 	/* XXX: I don't know how to check isakmp half connection attack. */
 
 	/* simply reply if the packet was processed. */
-	if (check_recvdpkt((struct sockaddr *)&remote,
-			(struct sockaddr *)&local, buf)) {
+	res=check_recvdpkt((struct sockaddr *)&remote,(struct sockaddr *)&local, buf);
+	if (res) {
 		plog(LLV_NOTIFY, LOCATION, NULL,
-			"the packet is retransmitted by %s.\n",
-			saddr2str((struct sockaddr *)&remote));
+			"the packet is retransmitted by %s (%d).\n",
+			 saddr2str((struct sockaddr *)&remote), res);
 		error = 0;
 		goto end;
 	}
@@ -801,20 +798,24 @@ ph1_main(iph1, msg)
 			    [iph1->side]
 			    [iph1->status])(iph1, msg);
 	if (error != 0) {
-#if 0
+
 		/* XXX
 		 * When an invalid packet is received on phase1, it should
 		 * be selected to process this packet.  That is to respond
 		 * with a notify and delete phase 1 handler, OR not to respond
-		 * and keep phase 1 handler.
+		 * and keep phase 1 handler. However, in PHASE1ST_START when
+		 * acting as RESPONDER we must not keep phase 1 handler or else
+		 * it will stay forever.
 		 */
-		plog(LLV_ERROR, LOCATION, iph1->remote,
-			"failed to pre-process packet.\n");
-		return -1;
-#else
-		/* ignore the error and keep phase 1 handler */
-		return 0;
-#endif
+
+		if (iph1->side == RESPONDER && iph1->status == PHASE1ST_START) {
+			plog(LLV_ERROR, LOCATION, iph1->remote,
+				"failed to pre-process packet.\n");
+			return -1;
+		} else {
+			/* ignore the error and keep phase 1 handler */
+			return 0;
+		}
 	}
 
 #ifndef ENABLE_FRAG
@@ -1780,10 +1781,16 @@ isakmp_send(iph1, sbuf)
 {
 	int len = 0;
 	int s;
-	vchar_t *vbuf = NULL;
+	vchar_t *vbuf = NULL, swap;
 
 #ifdef ENABLE_NATT
 	size_t extralen = NON_ESP_MARKER_USE(iph1) ? NON_ESP_MARKER_LEN : 0;
+
+	/* Check if NON_ESP_MARKER_LEN is already there (happens when resending packets)
+	 */
+	if(extralen == NON_ESP_MARKER_LEN &&
+	   *(u_int32_t *)sbuf->v == 0)
+		extralen = 0;
 
 #ifdef ENABLE_FRAG
 	/* 
@@ -1808,15 +1815,19 @@ isakmp_send(iph1, sbuf)
 		}
 		*(u_int32_t *)vbuf->v = 0;
 		memcpy (vbuf->v + extralen, sbuf->v, sbuf->l);
-		sbuf = vbuf;
+		/* ensures that the modified buffer will be sent back to the caller, so
+		 * add_recvdpkt() will add the correct buffer
+		 */
+		swap = *sbuf;
+		*sbuf = *vbuf;
+		*vbuf = swap;
+		vfree(vbuf);
 	}
 #endif
 
 	/* select the socket to be sent */
 	s = getsockmyaddr(iph1->local);
 	if (s == -1){
-		if ( vbuf != NULL )
-			vfree(vbuf);
 		return -1;
 	}
 
@@ -1828,8 +1839,6 @@ isakmp_send(iph1, sbuf)
 		if (isakmp_sendfrags(iph1, sbuf) == -1) {
 			plog(LLV_ERROR, LOCATION, NULL, 
 			    "isakmp_sendfrags failed\n");
-			if ( vbuf != NULL )
-				vfree(vbuf);
 			return -1;
 		}
 	} else 
@@ -1840,14 +1849,9 @@ isakmp_send(iph1, sbuf)
 
 		if (len == -1) {
 			plog(LLV_ERROR, LOCATION, NULL, "sendfromto failed\n");
-			if ( vbuf != NULL )
-				vfree(vbuf);
 			return -1;
 		}
 	}
-	
-	if ( vbuf != NULL )
-		vfree(vbuf);
 	
 	return 0;
 }

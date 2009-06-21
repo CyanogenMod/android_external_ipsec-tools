@@ -59,9 +59,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/queue.h>
-#ifndef ANDROID_CHANGES
 #include <sys/sysctl.h>
-#endif
 
 #include <net/route.h>
 #include <net/pfkeyv2.h>

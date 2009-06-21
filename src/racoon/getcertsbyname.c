@@ -58,11 +58,6 @@
 #include <strings.h>
 #endif
 
-#ifdef ANDROID_CHANGES
-#include <arpa/inet.h>
-#include <arpa_nameser.h>
-#endif
-
 #include "netdb_dnssec.h"
 
 /* XXX should it use ci_errno to hold errno instead of h_errno ? */

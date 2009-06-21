@@ -86,11 +86,6 @@
 #endif
 #endif
 
-#ifdef ANDROID_CHANGES
-#include <arpa/inet.h>
-#include <arpa_nameser.h>
-#endif
-
 #ifndef HAVE_GETIFADDRS
 static unsigned int if_maxindex __P((void));
 #endif

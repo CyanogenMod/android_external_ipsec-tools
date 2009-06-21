@@ -1,4 +1,4 @@
-/*	$NetBSD: crypto_openssl.c,v 1.11.6.4 2008/07/15 00:55:48 mgrooms Exp $	*/
+/*	$NetBSD: crypto_openssl.c,v 1.11.6.5 2009/04/20 13:33:30 tteras Exp $	*/
 
 /* Id: crypto_openssl.c,v 1.47 2006/05/06 20:42:09 manubsd Exp */
 
@@ -63,10 +63,8 @@
 #ifdef HAVE_OPENSSL_ENGINE_H
 #include <openssl/engine.h>
 #endif
-#ifndef ANDROID_CHANGES	// Not support blowfish and cast.
 #include <openssl/blowfish.h>
 #include <openssl/cast.h>
-#endif
 #include <openssl/err.h>
 #ifdef HAVE_OPENSSL_RC5_H
 #include <openssl/rc5.h>
@@ -120,18 +118,6 @@ static int cb_check_cert_remote __P((int, X509_STORE_CTX *));
 static X509 *mem2x509 __P((vchar_t *));
 
 static caddr_t eay_hmac_init __P((vchar_t *, const EVP_MD *));
-
-#ifdef ANDROID_CHANGES
-const EVP_CIPHER *EVP_cast5_cbc() {
-	fprintf(stderr, "FIX ME ! function %s() is not implemented in %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
-	return NULL;
-}
-
-const EVP_CIPHER *EVP_bf_cbc() {
-	fprintf(stderr, "FIX ME ! function %s() is not implemented in %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
-	return NULL;
-}
-#endif
 
 /* X509 Certificate */
 /*
@@ -915,12 +901,14 @@ eay_check_x509sign(source, sig, cert)
 	evp = X509_get_pubkey(x509);
 	if (! evp) {
 		plog(LLV_ERROR, LOCATION, NULL, "X509_get_pubkey(): %s\n", eay_strerror());
+		X509_free(x509);
 		return -1;
 	}
 
 	res = eay_rsa_verify(source, sig, evp->pkey.rsa);
 
 	EVP_PKEY_free(evp);
+	X509_free(x509);
 
 	return res;
 }

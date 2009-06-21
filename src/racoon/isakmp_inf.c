@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp_inf.c,v 1.14.4.14 2008/07/11 08:08:42 tteras Exp $	*/
+/*	$NetBSD: isakmp_inf.c,v 1.14.4.16 2009/04/20 13:35:36 tteras Exp $	*/
 
 /* Id: isakmp_inf.c,v 1.44 2006/05/06 20:45:52 manubsd Exp */
 
@@ -339,8 +339,7 @@ isakmp_info_recv_n(iph1, notify, msgid, encrypted)
 {
 	u_int type;
 	vchar_t *pbuf;
-	vchar_t *ndata;
-	char *nraw;
+	char *nraw, *ndata;
 	size_t l;
 	char *spi;
 
@@ -430,12 +429,12 @@ isakmp_info_recv_n(iph1, notify, msgid, encrypted)
 		if (l > 0) {
 			nraw = (char*)notify;	
 			nraw += sizeof(*notify) + notify->spi_size;
-			if ((ndata = vmalloc(l)) != NULL) {
-				memcpy(ndata->v, nraw, ndata->l);
+			ndata = binsanitize(nraw, l);
+			if (ndata != NULL) {
 				plog(LLV_ERROR, LOCATION, iph1->remote,
 				    "Message: '%s'.\n", 
-				    binsanitize(ndata->v, ndata->l));
-				vfree(ndata);
+				    ndata);
+				racoon_free(ndata);
 			} else {
 				plog(LLV_ERROR, LOCATION, iph1->remote,
 				    "Cannot allocate memory\n");
@@ -1211,6 +1210,11 @@ purge_ipsec_spi(dst0, proto, spi, n)
 			natt_port = (void *)mhp[SADB_X_EXT_NAT_T_DPORT];
 			if (extract_port(dst) == 0 && natt_port != NULL)
 				set_port(dst, ntohs(natt_port->sadb_x_nat_t_port_port));
+		}else{
+			/* Force default UDP ports, so CMPSADDR will match SAs with NO encapsulation
+			 */
+			set_port(src, PORT_ISAKMP);
+			set_port(dst, PORT_ISAKMP);
 		}
 #endif
 		plog(LLV_DEBUG2, LOCATION, NULL, "src: %s\n", saddr2str(src));
@@ -1225,6 +1229,15 @@ purge_ipsec_spi(dst0, proto, spi, n)
 			continue;
 		}
 
+#ifdef ENABLE_NATT
+		if (natt_type == NULL ||
+			! natt_type->sadb_x_nat_t_type_type) {
+			/* Set back port to 0 if it was forced to default UDP port
+			 */
+			set_port(src, 0);
+			set_port(dst, 0);
+		}
+#endif
 		for (i = 0; i < n; i++) {
 			plog(LLV_DEBUG, LOCATION, NULL,
 				"check spi(packet)=%u spi(db)=%u.\n",

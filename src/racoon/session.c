@@ -62,13 +62,6 @@
 
 #include <netinet/in.h>
 #include <resolv.h>
-#ifdef ANDROID_CHANGES
-#include <arpa/inet.h>
-#include <arpa_nameser.h>
-extern int control_init();
-extern int control_handler();
-extern int control_newclient();
-#endif
 
 #include "libpfkey.h"
 
@@ -139,10 +132,6 @@ session(void)
 
 #ifdef ENABLE_ADMINPORT
 	if (admin_init() < 0)
-		exit(1);
-#endif
-#ifdef ANDROID_CHANGES
-	if (control_init() < 0)
 		exit(1);
 #endif
 
@@ -219,23 +208,8 @@ session(void)
 
 #ifdef ENABLE_ADMINPORT
 		if ((lcconf->sock_admin != -1) &&
-			(FD_ISSET(lcconf->sock_admin, &rfds)))
+		    (FD_ISSET(lcconf->sock_admin, &rfds)))
 			admin_handler();
-#endif
-#ifdef ANDROID_CHANGES
-		if ((lcconf->control_client != -1) &&
-			(FD_ISSET(lcconf->control_client, &rfds))) {
-			if (control_handler() == -1) {
-                                kill(getpid(), SIGTERM);
-                        }
-			initfds();
-		}
-		if ((lcconf->sock_control != -1) &&
-			(FD_ISSET(lcconf->sock_control, &rfds))) {
-			if (control_newclient() != -1) {
-				initfds();
-			}
-		}
 #endif
 
 		for (p = lcconf->myaddrs; p; p = p->next) {
@@ -308,24 +282,6 @@ initfds()
 		FD_SET(lcconf->sock_admin, &maskdying);
 #endif
 		nfds = (nfds > lcconf->sock_admin ? nfds : lcconf->sock_admin);
-	}
-#endif
-#ifdef ANDROID_CHANGES
-	if (lcconf->sock_control != -1) {
-		if (lcconf->sock_control>= FD_SETSIZE) {
-			plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-			exit(1);
-		}
-		FD_SET(lcconf->sock_control, &mask0);
-		nfds = (nfds > lcconf->sock_control ? nfds : lcconf->sock_control);
-	}
-	if (lcconf->control_client != -1) {
-		if (lcconf->control_client >= FD_SETSIZE) {
-			plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-			exit(1);
-		}
-		FD_SET(lcconf->control_client, &mask0);
-		nfds = (nfds > lcconf->control_client ? nfds : lcconf->control_client);
 	}
 #endif
 	if (lcconf->sock_pfkey >= FD_SETSIZE) {
@@ -633,3 +589,4 @@ close_sockets()
 #endif
 	return 0;
 }
+

@@ -47,9 +47,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
-#ifndef ANDROID_CHANGES
 #include <glob.h>
-#endif
 #ifdef HAVE_STDARG_H
 #include <stdarg.h>
 #else

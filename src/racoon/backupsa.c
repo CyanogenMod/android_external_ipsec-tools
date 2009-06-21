@@ -86,12 +86,6 @@ static char *strmon[12] = {
 static char *str2tmx __P((char *, struct tm *));
 static int str2num __P((char *, int));
 
-#ifdef ANDROID_CHANGES
-#include <linux/coda.h>
-u_quad_t strtouq(char *nptr, char **endptr, int base) {
-	return strtoul(nptr, endptr, base);
-}
-#endif
 /*
  * output the sa parameter.
  */

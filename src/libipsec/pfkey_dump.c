@@ -80,10 +80,6 @@
 #define SADB_X_EALG_AESCBC  SADB_X_EALG_AES
 #endif
 
-#ifdef ANDROID_CHANGES
-void endprotoent() {}
-#endif
-
 #define GETMSGSTR(str, num) \
 do { \
 	/*CONSTCOND*/ \
