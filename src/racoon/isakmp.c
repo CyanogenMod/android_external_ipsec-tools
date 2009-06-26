@@ -116,6 +116,9 @@
 #  ifndef SOL_UDP
 #   define SOL_UDP 17
 #  endif
+#ifdef ANDROID_CHANGES
+#define __linux
+#endif
 # endif /* __linux__ */
 # if defined(__NetBSD__) || defined(__FreeBSD__) ||	\
   (defined(__APPLE__) && defined(__MACH__))

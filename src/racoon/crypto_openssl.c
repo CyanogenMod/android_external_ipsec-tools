@@ -63,8 +63,13 @@
 #ifdef HAVE_OPENSSL_ENGINE_H
 #include <openssl/engine.h>
 #endif
+#ifndef ANDROID_CHANGES
 #include <openssl/blowfish.h>
 #include <openssl/cast.h>
+#else
+#define EVP_bf_cbc()    NULL
+#define EVP_cast5_cbc() NULL
+#endif
 #include <openssl/err.h>
 #ifdef HAVE_OPENSSL_RC5_H
 #include <openssl/rc5.h>

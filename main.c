@@ -24,6 +24,12 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 
+#ifdef ANDROID_CHANGES
+#include <fcntl.h>
+#include <android/log.h>
+#include <cutils/sockets.h>
+#endif
+
 #include "config.h"
 #include "libpfkey.h"
 #include "ipsec_strerror.h"
@@ -52,11 +58,68 @@ static void interrupt(int signal)
     exit(1);
 }
 
+#ifdef ANDROID_CHANGES
+
+static int get_control_and_arguments(int *argc, char ***argv)
+{
+    static char *args[256];
+    int control;
+    int i;
+
+    if ((i = android_get_control_socket("racoon")) == -1) {
+        return -1;
+    }
+    do_plog(LLV_DEBUG, "Waiting for control socket");
+    if (listen(i, 1) == -1 || (control = accept(i, NULL, 0)) == -1) {
+        do_plog(LLV_ERROR, "Cannot get control socket");
+        exit(-1);
+    }
+    close(i);
+    fcntl(control, F_SETFD, FD_CLOEXEC);
+
+    args[0] = (*argv)[0];
+    for (i = 1; i < 256; ++i) {
+        unsigned char length;
+        if (recv(control, &length, 1, 0) != 1) {
+            do_plog(LLV_ERROR, "Cannot get argument length");
+            exit(-1);
+        }
+        if (length == 0xFF) {
+            break;
+        } else {
+            int offset = 0;
+            args[i] = malloc(length + 1);
+            while (offset < length) {
+                int n = recv(control, &args[i][offset], length - offset, 0);
+                if (n > 0) {
+                    offset += n;
+                } else {
+                    do_plog(LLV_ERROR, "Cannot get argument value");
+                    exit(-1);
+                }
+            }
+            args[i][length] = 0;
+        }
+    }
+    do_plog(LLV_DEBUG, "Received %d arguments", i - 1);
+
+    *argc = i;
+    *argv = args;
+    return control;
+}
+
+#endif
+
+
 int main(int argc, char **argv)
 {
     fd_set fdset;
     int fdset_size;
     struct myaddrs *p;
+#ifdef ANDROID_CHANGES
+    unsigned char code;
+    int control = get_control_and_arguments(&argc, &argv);
+#endif
 
     do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
 
@@ -74,6 +137,11 @@ int main(int argc, char **argv)
     if (setup(argc, argv) < 0 || pfkey_init() < 0 || isakmp_init() < 0) {
         exit(1);
     }
+
+#ifdef ANDROID_CHANGES
+    code = argc - 1;
+    send(control, &code, 1, 0);
+#endif
 
 #ifdef ENABLE_NATT
     natt_keepalive_init();
@@ -112,12 +180,25 @@ int main(int argc, char **argv)
 
 void do_plog(int level, char *format, ...)
 {
-    static char *levels = "EWNIDD";
-    fprintf(stderr, "%c: ", levels[level]);
-    va_list ap;
-    va_start(ap, format);
-    vfprintf(stderr, format, ap);
-    va_end(ap);
+    if (level >= 0 && level <= 5) {
+#ifdef ANDROID_CHANGES
+        static int levels[6] = {
+            ANDROID_LOG_ERROR, ANDROID_LOG_WARN, ANDROID_LOG_INFO,
+            ANDROID_LOG_INFO, ANDROID_LOG_DEBUG, ANDROID_LOG_VERBOSE
+        };
+        va_list ap;
+        va_start(ap, format);
+        __android_log_vprint(levels[level], "racoon", format, ap);
+        va_end(ap);
+#else
+        static char *levels = "EWNIDV";
+        fprintf(stderr, "%c: ", levels[level]);
+        va_list ap;
+        va_start(ap, format);
+        vfprintf(stderr, format, ap);
+        va_end(ap);
+#endif
+    }
 }
 
 char *binsanitize(char *data, size_t length)
