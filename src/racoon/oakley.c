@@ -1365,8 +1365,13 @@ oakley_validate_auth(iph1)
 					}
 
 					error = get_cert_fromlocal(iph1, 0);
+#ifdef ANDROID_PATCHED
+					if (!error)
+						break;
+				default:
+					return ISAKMP_INTERNAL_ERROR;
+#else
 					break;
-
 				case ISAKMP_CERT_PLAINRSA:
 					error = get_plainrsa_fromlocal(iph1, 0);
 					break;
@@ -1393,6 +1398,7 @@ oakley_validate_auth(iph1)
 				plog(LLV_ERROR, LOCATION, NULL,
 					"no CERT RR found.\n");
 				return ISAKMP_INTERNAL_ERROR;
+#endif
 			}
 			break;
 		default:
@@ -1502,12 +1508,14 @@ oakley_validate_auth(iph1)
 					iph1->sig_p,
 					&iph1->cert_p->cert);
 			break;
+#ifndef ANDROID_PATCHED
 		case ISAKMP_CERT_PLAINRSA:
 			iph1->rsa_p = rsa_try_check_rsasign(my_hash,
 					iph1->sig_p, iph1->rsa_candidates);
 			error = iph1->rsa_p ? 0 : -1;
 
 			break;
+#endif
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
 				"no supported certtype %d\n",
@@ -1630,12 +1638,12 @@ oakley_getmycert(iph1)
 			if (iph1->cert)
 				return 0;
 			return get_cert_fromlocal(iph1, 1);
-
+#ifndef ANDROID_PATCHED
 		case ISAKMP_CERT_PLAINRSA:
 			if (iph1->rsa)
 				return 0;
 			return get_plainrsa_fromlocal(iph1, 1);
-
+#endif
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
 			     "Unknown certtype #%d\n",
@@ -1734,6 +1742,7 @@ end:
 	return error;
 }
 
+#ifndef ANDROID_PATCHED
 static int
 get_plainrsa_fromlocal(iph1, my)
 	struct ph1handle *iph1;
@@ -1785,6 +1794,7 @@ get_plainrsa_fromlocal(iph1, my)
 end:
 	return error;
 }
+#endif
 
 /* get signature */
 int
@@ -1818,9 +1828,11 @@ oakley_getsign(iph1)
 
 		iph1->sig = eay_get_x509sign(iph1->hash, privkey);
 		break;
+#ifndef ANDROID_PATCHED
 	case ISAKMP_CERT_PLAINRSA:
 		iph1->sig = eay_get_rsasign(iph1->hash, iph1->rsa);
 		break;
+#endif
 	default:
 		plog(LLV_ERROR, LOCATION, NULL,
 		     "Unknown certtype #%d\n",

@@ -3614,6 +3614,7 @@ ipsecdoi_checkid1(iph1)
 
 	id_b = (struct ipsecdoi_id_b *)iph1->id_p->v;
 
+#ifndef ANDROID_PATCHED
 	/* In main mode with pre-shared key, only address type can be used. */
 	if (iph1->etype == ISAKMP_ETYPE_IDENT &&
 	    iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_PSKEY) {
@@ -3625,6 +3626,7 @@ ipsecdoi_checkid1(iph1)
 			return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
 		}
 	}
+#endif
 
 	/* if proper type for phase 1 ? */
 	switch (id_b->type) {

@@ -34,6 +34,31 @@
 #ifndef _PLOG_H
 #define _PLOG_H
 
+#ifdef ANDROID_PATCHED
+
+#define LLV_ERROR   0
+#define LLV_WARNING 1
+#define LLV_NOTIFY  2
+#define LLV_INFO    3
+#define LLV_DEBUG   4
+#define LLV_DEBUG2  5
+
+#define loglevel LLV_INFO
+
+#define plog(level, location, address, ...)                 \
+    do {                                                    \
+        if ((level) >= LLV_ERROR && (level) <= LLV_INFO) {  \
+            do_plog((level), __VA_ARGS__);                  \
+        }                                                   \
+    } while (0)
+
+#define plogdump(...)
+
+extern void do_plog(int level, char *format, ...);
+extern char* binsanitize(char *binary, size_t size);
+
+#else
+
 #ifdef HAVE_STDARG_H
 #include <stdarg.h>
 #else
@@ -78,5 +103,7 @@ extern void ploginit __P((void));
 extern void plogset __P((char *));
 
 extern char* binsanitize __P((char*, size_t));
+
+#endif
 
 #endif /* _PLOG_H */

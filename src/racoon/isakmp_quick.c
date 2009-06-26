@@ -434,7 +434,7 @@ quick_i2recv(iph2, msg0)
 				/* for IDcr */
 				vp = iph2->id_p;
 			}
-
+#ifndef ANDROID_PATCHED
 			if (memcmp(vp->v, (caddr_t)pa->ptr + sizeof(struct isakmp_gen), vp->l)) {
 
 				plog(LLV_ERROR, LOCATION, NULL,
@@ -442,6 +442,7 @@ quick_i2recv(iph2, msg0)
 				error = ISAKMP_NTYPE_ATTRIBUTES_NOT_SUPPORTED;
 				goto end;
 			}
+#endif
 		    }
 			break;
 

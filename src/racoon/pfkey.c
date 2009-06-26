@@ -1133,6 +1133,7 @@ pk_sendupdate(iph2)
 			return -1;
 		}
 
+#ifndef ANDROID_PATCHED
 		if (!lcconf->pathinfo[LC_PATHTYPE_BACKUPSA])
 			continue;
 
@@ -1157,6 +1158,7 @@ pk_sendupdate(iph2)
 			"backuped SA: %s\n",
 			sadbsecas2str(sa_args.src, sa_args.dst,
 			sa_args.satype, sa_args.spi, sa_args.mode));
+#endif
 	}
 
 	return 0;
@@ -1427,6 +1429,7 @@ pk_sendadd(iph2)
 			return -1;
 		}
 
+#ifndef ANDROID_PATCHED
 		if (!lcconf->pathinfo[LC_PATHTYPE_BACKUPSA])
 			continue;
 
@@ -1446,6 +1449,7 @@ pk_sendadd(iph2)
 			"backuped SA: %s\n",
 			sadbsecas2str(sa_args.src, sa_args.dst,
 			sa_args.satype, sa_args.spi, sa_args.mode));
+#endif
 	}
 	return 0;
 }

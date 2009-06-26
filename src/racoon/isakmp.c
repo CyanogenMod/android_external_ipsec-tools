@@ -1757,6 +1757,7 @@ skip_encap:
 void
 isakmp_close()
 {
+#ifndef ANDROID_PATCHED
 	struct myaddrs *p, *next;
 
 	for (p = lcconf->myaddrs; p; p = next) {
@@ -1772,6 +1773,7 @@ isakmp_close()
 	}
 
 	lcconf->myaddrs = NULL;
+#endif
 }
 
 int
