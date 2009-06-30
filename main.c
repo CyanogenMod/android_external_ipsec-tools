@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <android/log.h>
 #include <cutils/sockets.h>
+#include <private/android_filesystem_config.h>
 #endif
 
 #include "config.h"
@@ -141,6 +142,7 @@ int main(int argc, char **argv)
 #ifdef ANDROID_CHANGES
     code = argc - 1;
     send(control, &code, 1, 0);
+    setuid(AID_VPN);
 #endif
 
 #ifdef ENABLE_NATT
