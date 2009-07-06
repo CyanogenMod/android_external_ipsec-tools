@@ -54,11 +54,13 @@ LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH)/src/include-glibc \
 	$(LOCAL_PATH)/src/libipsec \
 	$(LOCAL_PATH)/src/racoon \
-	$(LOCAL_PATH)/src/racoon/missing
+	$(LOCAL_PATH)/src/racoon/missing \
+	external/openssl/include \
+	frameworks/base/cmds/keystore
 
 LOCAL_SHARED_LIBRARIES := libcutils libcrypto
 
-LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -Iexternal/openssl/include
+LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
 
 LOCAL_MODULE := racoon
 

@@ -69,6 +69,7 @@
 #else
 #define EVP_bf_cbc()    NULL
 #define EVP_cast5_cbc() NULL
+#include "keystore_get.h"
 #endif
 #include <openssl/err.h>
 #ifdef HAVE_OPENSSL_RC5_H
@@ -435,6 +436,26 @@ eay_cmp_asn1dn(n1, n2)
 	return i;
 }
 
+#ifdef ANDROID_CHANGES
+static BIO *BIO_from_keystore(char *key)
+{
+	BIO *bio = NULL;
+	char *value;
+	int size;
+
+	value = keystore_get(key, &size);
+	if (value) {
+		bio = BIO_new(BIO_s_mem());
+		if (bio) {
+			BIO_write(bio, value, size);
+		}
+		free(value);
+	}
+	return bio;
+}
+#endif
+
+
 /*
  * this functions is derived from apps/verify.c in OpenSSL0.9.5
  */
@@ -460,6 +481,7 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 	else 
 		X509_STORE_set_verify_cb_func(cert_ctx, cb_check_cert_remote);
 
+#ifndef ANDROID_CHANGES
 	lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
 	if (lookup == NULL)
 		goto end;
@@ -476,6 +498,16 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 		goto end;
 	}
 	error = -1;	/* initialized */
+#else
+	if (CAfile) {
+		BIO *bio = BIO_from_keystore(CAfile);
+		if (bio) {
+			x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+			X509_STORE_add_cert(cert_ctx, x509);
+			BIO_free(bio);
+		}
+	}
+#endif
 
 	/* read the certificate to be verified */
 	x509 = mem2x509(cert);
@@ -849,12 +881,21 @@ eay_get_x509cert(path)
 	int len;
 	int error;
 
+#ifdef ANDROID_CHANGES
+	BIO *bio = BIO_from_keystore(path);
+	x509 = NULL;
+	if (bio) {
+		x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+		BIO_free(bio);
+	}
+#else
 	/* Read private key */
 	fp = fopen(path, "r");
 	if (fp == NULL)
 		return NULL;
 	x509 = PEM_read_X509(fp, NULL, NULL, NULL);
 	fclose (fp);
+#endif
 
 	if (x509 == NULL)
 		return NULL;
@@ -946,6 +987,13 @@ eay_get_pkcs1privkey(path)
 	int pkeylen;
 	int error = -1;
 
+#ifdef ANDROID_CHANGES
+	BIO *bio = BIO_from_keystore(path);
+	if (bio) {
+		evp = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+		BIO_free(bio);
+	}
+#else
 	/* Read private key */
 	fp = fopen(path, "r");
 	if (fp == NULL)
@@ -954,6 +1002,7 @@ eay_get_pkcs1privkey(path)
 	evp = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
 
 	fclose (fp);
+#endif
 
 	if (evp == NULL)
 		return NULL;

@@ -29,6 +29,7 @@
 #include <android/log.h>
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
+#include "keystore_get.h"
 #endif
 
 #include "config.h"
@@ -103,6 +104,18 @@ static int get_control_and_arguments(int *argc, char ***argv)
         }
     }
     do_plog(LLV_DEBUG, "Received %d arguments", i - 1);
+
+    /* Pre-shared key is now stored in keystore. We do the query here so
+     * setup.c is clean and free from android specific code. */
+    if (i == 5) {
+        char *value = keystore_get(args[4], NULL);
+        if (!value) {
+            do_plog(LLV_ERROR, "Cannot get pre-shared key from keystore");
+            exit(-1);
+        }
+        free(args[4]);
+        args[4] = value;
+    }
 
     *argc = i;
     *argv = args;
