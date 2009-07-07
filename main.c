@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
@@ -39,15 +40,14 @@
 #include "vmbuf.h"
 #include "crypto_openssl.h"
 #include "oakley.h"
-#include "vendorid.h"
 #include "pfkey.h"
 #include "schedule.h"
 #include "isakmp_var.h"
 #include "nattraversal.h"
-#include "plog.h"
-#include "grabmyaddr.h"
 #include "localconf.h"
 #include "sockmisc.h"
+#include "grabmyaddr.h"
+#include "plog.h"
 #include "admin.h"
 #include "privsep.h"
 #include "misc.h"
@@ -105,25 +105,12 @@ static int get_control_and_arguments(int *argc, char ***argv)
     }
     do_plog(LLV_DEBUG, "Received %d arguments", i - 1);
 
-    /* Pre-shared key is now stored in keystore. We do the query here so
-     * setup.c is clean and free from android specific code. */
-    if (i == 5) {
-        char *value = keystore_get(args[4], NULL);
-        if (!value) {
-            do_plog(LLV_ERROR, "Cannot get pre-shared key from keystore");
-            exit(-1);
-        }
-        free(args[4]);
-        args[4] = value;
-    }
-
     *argc = i;
     *argv = args;
     return control;
 }
 
 #endif
-
 
 int main(int argc, char **argv)
 {
@@ -290,6 +277,25 @@ void privsep_pfkey_close(int key)
 vchar_t *privsep_eay_get_pkcs1privkey(char *file)
 {
     return eay_get_pkcs1privkey(file);
+}
+
+vchar_t *privsep_getpsk(const char *key, int size)
+{
+    vchar_t *p = NULL;
+#ifdef ANDROID_CHANGES
+    char *value = keystore_get(key, &size);
+    if (value) {
+        if ((p = vmalloc(size)) != NULL) {
+            memcpy(p->v, value, p->l);
+        }
+        free(value);
+    }
+#else
+    if (key && (p = vmalloc(size)) != NULL) {
+        memcpy(p->v, key, p->l);
+    }
+#endif
+    return p;
 }
 
 int privsep_script_exec(char *script, int name, char * const *environ)

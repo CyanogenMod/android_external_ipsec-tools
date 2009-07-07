@@ -38,6 +38,8 @@
 #include "sockmisc.h"
 #include "grabmyaddr.h"
 #include "plog.h"
+#include "admin.h"
+#include "privsep.h"
 
 static struct myaddrs myaddrs[2];
 static struct etypes main_mode = { .type = ISAKMP_ETYPE_IDENT };
@@ -162,8 +164,7 @@ static int spdadd(struct sockaddr *local, struct sockaddr *remote)
         struct sadb_x_policy p;
         struct sadb_x_ipsecrequest q;
     } policy;
-    int mask = (local->sa_family == AF_INET) ? sizeof(struct in_addr) * 8
-               : sizeof(struct in6_addr) * 8;
+    int mask = (local->sa_family == AF_INET) ? 32 : 128;
     int key = pfkey_open();
     if (key == -1) {
         return -1;
@@ -275,11 +276,7 @@ int setup(int argc, char **argv)
 
 vchar_t *getpskbyaddr(struct sockaddr *addr)
 {
-    vchar_t *p = NULL;
-    if (pre_shared_key && (p = vmalloc(strlen(pre_shared_key)))) {
-        memcpy(p->v, pre_shared_key, p->l);
-    }
-    return p;
+    return privsep_getpsk(pre_shared_key, strlen(pre_shared_key));
 }
 
 vchar_t *getpskbyname(vchar_t *name)
@@ -314,12 +311,13 @@ struct isakmpsa *dupisakmpsa(struct isakmpsa *sa)
 
 void delisakmpsa(struct isakmpsa *sa)
 {
-    if (sa) {
+    while (sa) {
+        struct isakmpsa *p = sa->next;
         if (sa->dhgrp) {
             oakley_dhgrp_free(sa->dhgrp);
         }
-        delisakmpsa(sa->next);
         free(sa);
+        sa = p;
     }
 }
 
