@@ -52,10 +52,10 @@
 #include "privsep.h"
 #include "misc.h"
 
-extern int setup(int argc, char **argv);
+extern void setup(int argc, char **argv);
 int f_local = 0;
 
-static void interrupt(int signal)
+static void terminate(int signal)
 {
     exit(1);
 }
@@ -118,29 +118,28 @@ int main(int argc, char **argv)
     int fdset_size;
     struct myaddrs *p;
 #ifdef ANDROID_CHANGES
-    unsigned char code;
     int control = get_control_and_arguments(&argc, &argv);
+    unsigned char code = argc - 1;
 #endif
 
     do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
 
-    signal(SIGHUP, interrupt);
-    signal(SIGINT, interrupt);
-    signal(SIGTERM, interrupt);
-    signal(SIGCHLD, interrupt);
+    signal(SIGHUP, terminate);
+    signal(SIGINT, terminate);
+    signal(SIGTERM, terminate);
     signal(SIGPIPE, SIG_IGN);
 
     eay_init();
     oakley_dhinit();
     compute_vendorids();
     sched_init();
+    setup(argc, argv);
 
-    if (setup(argc, argv) < 0 || pfkey_init() < 0 || isakmp_init() < 0) {
+    if (pfkey_init() < 0 || isakmp_init() < 0) {
         exit(1);
     }
 
 #ifdef ANDROID_CHANGES
-    code = argc - 1;
     send(control, &code, 1, 0);
     setuid(AID_VPN);
 #endif

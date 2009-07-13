@@ -17,9 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
+#include <netdb.h>
 
 #include "config.h"
 #include "libpfkey.h"
@@ -51,7 +53,7 @@ static char *pre_shared_key;
 struct localconf *lcconf = &localconf;
 char *script_names[SCRIPT_MAX + 1];
 
-static void init()
+static void set_default()
 {
     localconf.myaddrs = &myaddrs[0];
     localconf.port_isakmp = PORT_ISAKMP;
@@ -100,6 +102,41 @@ static void init()
 
     sainfo.lifetime = IPSECDOI_ATTR_SA_LD_SEC_DEFAULT;
     sainfo.lifebyte = IPSECDOI_ATTR_SA_LD_KB_MAX;
+}
+
+static void set_address(char *server, char *port)
+{
+    struct addrinfo hints = {
+        .ai_flags = AI_NUMERICSERV,
+#ifndef INET6
+        .ai_family = AF_INET,
+#else
+        .ai_faimly = AF_UNSPEC
+#endif
+        .ai_socktype = SOCK_DGRAM,
+    };
+    struct addrinfo *r;
+    int s, i;
+
+    if (getaddrinfo(server, port, &hints, &r) != 0) {
+        plog(LLV_ERROR, "set_address", NULL, "Cannot resolve server address");
+        exit(1);
+    }
+    if (r->ai_next) {
+        plog(LLV_WARNING, "set_address", NULL, "Multiple server address found");
+    }
+    remoteconf.remote = dupsaddr(r->ai_addr);
+    myaddrs[0].addr = dupsaddr(r->ai_addr);
+
+    s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
+    i = r->ai_addrlen;
+    if (s == -1 || connect(s, r->ai_addr, r->ai_addrlen) == -1 ||
+        getsockname(s, myaddrs[0].addr, &i) == -1) {
+        plog(LLV_ERROR, "set_address", NULL, "Cannot get local address");
+        exit(1);
+    }
+    close(s);
+    freeaddrinfo(r);
 }
 
 static void add_proposal(int auth, int hash, int encryption, int length)
@@ -158,7 +195,7 @@ static void flush()
 
 /* flush; spdflush;
  * spdadd local remote udp -P out ipsec esp/transport//require; */
-static int spdadd(struct sockaddr *local, struct sockaddr *remote)
+static void spdadd(struct sockaddr *local, struct sockaddr *remote)
 {
     struct __attribute__((packed)) {
         struct sadb_x_policy p;
@@ -167,7 +204,8 @@ static int spdadd(struct sockaddr *local, struct sockaddr *remote)
     int mask = (local->sa_family == AF_INET) ? 32 : 128;
     int key = pfkey_open();
     if (key == -1) {
-        return -1;
+        plog(LLV_ERROR, "spdadd", NULL, "Cannot create KEY socket");
+        exit(1);
     }
 
     memset(&policy, 0, sizeof(policy));
@@ -183,55 +221,34 @@ static int spdadd(struct sockaddr *local, struct sockaddr *remote)
     policy.q.sadb_x_ipsecrequest_mode = IPSEC_MODE_TRANSPORT;
     policy.q.sadb_x_ipsecrequest_level = IPSEC_LEVEL_REQUIRE;
 
-    if (pfkey_send_flush(key, SADB_SATYPE_UNSPEC) > 0
-        && pfkey_send_spdflush(key) > 0
-        && pfkey_send_spdadd(key, local, mask, remote, mask, IPPROTO_UDP,
-                             (caddr_t)&policy, sizeof(policy), 0) > 0) {
-        mask = 0;
+    if (pfkey_send_flush(key, SADB_SATYPE_UNSPEC) <= 0 ||
+        pfkey_send_spdflush(key) <= 0 ||
+        pfkey_send_spdadd(key, local, mask, remote, mask, IPPROTO_UDP,
+                          (caddr_t)&policy, sizeof(policy), 0) <= 0) {
+        plog(LLV_ERROR, "spdadd", NULL, "Cannot initialize SA and SPD");
+        exit(1);
     }
     pfkey_close(key);
-    return mask ? -1 : 0;
 }
 
-/* The following usages are accepted:
- *   racoon local-ip remote-ip remote-port pre-shared-key
- *   racoon local-ip remote-ip remote-port my-key my-cert ca-cert */
-int setup(int argc, char **argv)
+void setup(int argc, char **argv)
 {
     int auth;
-    if (argc != 5 && argc != 7) {
-        printf("Usage: %s local remote port pre-shared-key\n"
-               "       %s local remote port my-private-key my-cert ca-cert\n",
+    if (argc != 4 && argc != 6) {
+        printf("Usage: %s server port pre-shared-key\n"
+               "       %s server port my-private-key my-cert ca-cert\n",
                argv[0], argv[0]);
-        return -1;
+        exit(0);
     }
-    init();
+    set_default();
 
     /* Set local address and remote address. */
-    myaddrs[0].addr = str2saddr(argv[1], NULL);
-    remoteconf.remote = str2saddr(argv[2], NULL);
-    if (!myaddrs[0].addr || !remoteconf.remote) {
-        plog(LLV_ERROR, "setup", NULL, "Cannot get IP address");
-        return -1;
-    }
-    if (myaddrs[0].addr->sa_family != remoteconf.remote->sa_family) {
-        plog(LLV_ERROR, "setup", NULL, "Address family mismatch");
-        return -1;
-    }
-#ifndef INET6
-    if (myaddrs[0].addr->sa_family != AF_INET) {
-        plog(LLV_ERROR, "setup", NULL, "IPv6 is disabled");
-        return -1;
-    }
-#endif
+    set_address(argv[1], argv[2]);
 
     /* Initialize SA and SPD. */
-    set_port(remoteconf.remote, atoi(argv[3]));
-    if (spdadd(myaddrs[0].addr, remoteconf.remote) < 0) {
-        plog(LLV_ERROR, "setup", NULL, "Cannot initialize SA and SPD");
-        return -1;
-    }
     atexit(flush);
+    set_port(myaddrs[0].addr, 0);
+    spdadd(myaddrs[0].addr, remoteconf.remote);
 
     /* Set local port and remote port. */
     set_port(myaddrs[0].addr, localconf.port_isakmp);
@@ -244,13 +261,13 @@ int setup(int argc, char **argv)
 #endif
 
     /* Set authentication method. */
-    if (argc == 5) {
-        pre_shared_key = argv[4];
+    if (argc == 4) {
+        pre_shared_key = argv[3];
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
     } else {
-        remoteconf.myprivfile = argv[4];
-        remoteconf.mycertfile = argv[5];
-        remoteconf.cacertfile = argv[6];
+        remoteconf.myprivfile = argv[3];
+        remoteconf.mycertfile = argv[4];
+        remoteconf.cacertfile = argv[5];
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
     }
 
@@ -268,8 +285,6 @@ int setup(int argc, char **argv)
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_3DES, 0);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_DES, 0);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_AES, 128);
-
-    return 0;
 }
 
 /* localconf.h */
