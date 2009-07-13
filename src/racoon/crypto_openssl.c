@@ -504,6 +504,7 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 		if (bio) {
 			x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
 			X509_STORE_add_cert(cert_ctx, x509);
+			X509_free(x509);
 			BIO_free(bio);
 		}
 	}
