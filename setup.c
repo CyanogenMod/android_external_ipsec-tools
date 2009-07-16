@@ -116,7 +116,8 @@ static void set_address(char *server, char *port)
         .ai_socktype = SOCK_DGRAM,
     };
     struct addrinfo *r;
-    int s, i;
+    socklen_t len;
+    int s;
 
     if (getaddrinfo(server, port, &hints, &r) != 0) {
         plog(LLV_ERROR, "set_address", NULL, "Cannot resolve server address");
@@ -128,10 +129,10 @@ static void set_address(char *server, char *port)
     remoteconf.remote = dupsaddr(r->ai_addr);
     myaddrs[0].addr = dupsaddr(r->ai_addr);
 
+    len = r->ai_addrlen;
     s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-    i = r->ai_addrlen;
     if (s == -1 || connect(s, r->ai_addr, r->ai_addrlen) == -1 ||
-        getsockname(s, myaddrs[0].addr, &i) == -1) {
+        getsockname(s, myaddrs[0].addr, &len) == -1) {
         plog(LLV_ERROR, "set_address", NULL, "Cannot get local address");
         exit(1);
     }
