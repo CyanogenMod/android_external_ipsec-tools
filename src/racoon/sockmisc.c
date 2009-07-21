@@ -253,6 +253,71 @@ cmpsaddrstrict(addr1, addr2)
 	return 0;
 }
 
+#ifdef ANDROID_PATCHED
+
+struct sockaddr *getlocaladdr(struct sockaddr *remote)
+{
+    struct sockaddr_storage local;
+    socklen_t len = sysdep_sa_len(remote);
+    int s = socket(remote->sa_family, SOCK_DGRAM, 0);
+    if (s == -1 || connect(s, remote, len) == -1 ||
+        getsockname(s, (struct sockaddr *)&local, &len) == -1) {
+        close(s);
+        return NULL;
+    }
+    close(s);
+    set_port((struct sockaddr *)&local, 0);
+    return dupsaddr((struct sockaddr *)&local);
+}
+
+int recvfromto(int s, void *buf, size_t len, int flags, struct sockaddr *from,
+               socklen_t *fromlen, struct sockaddr *to, unsigned int *tolen)
+{
+    *tolen = sizeof(struct sockaddr_storage);
+    if (getsockname(s, to, (socklen_t *)tolen) == -1) {
+        return -1;
+    }
+    return recvfrom(s, buf, len, flags, from, fromlen);
+}
+
+int sendfromto(int s, const void *buf, size_t len, struct sockaddr *from,
+               struct sockaddr *to, int count)
+{
+    socklen_t tolen = sysdep_sa_len(to);
+    int i;
+    for (i = 0; i < count; ++i) {
+        if (sendto(s, buf, len, 0, to, tolen) == -1) {
+            return -1;
+        }
+    }
+    return len;
+}
+
+int setsockopt_bypass(int s, int family)
+{
+    struct sadb_x_policy p = {
+        .sadb_x_policy_len = PFKEY_UNIT64(sizeof(struct sadb_x_policy)),
+        .sadb_x_policy_exttype = SADB_X_EXT_POLICY,
+        .sadb_x_policy_type = IPSEC_POLICY_BYPASS,
+        .sadb_x_policy_dir = IPSEC_DIR_INBOUND,
+#ifdef HAVE_PFKEY_POLICY_PRIORITY
+        .sadb_x_policy_priority = PRIORITY_DEFAULT,
+#endif
+    };
+    int level = (family == AF_INET) ? IPPROTO_IP : IPPROTO_IPV6;
+    int option = (family == AF_INET) ? IP_IPSEC_POLICY : IPV6_IPSEC_POLICY;
+    int len = PFKEY_EXTLEN(&p);
+    if (setsockopt(s, level, option, &p, len) == -1 ||
+        (p.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND,
+         setsockopt(s, level, option, &p, len) == -1)) {
+        plog(LLV_ERROR, LOCATION, NULL, "setsockopt_bypass() %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+#else
+
 /* get local address against the destination. */
 struct sockaddr *
 getlocaladdr(remote)
@@ -792,6 +857,8 @@ newsaddr(len)
 out:
 	return new;
 }
+
+#endif
 
 struct sockaddr *
 dupsaddr(src)

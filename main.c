@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -26,7 +25,8 @@
 #include <sys/select.h>
 
 #ifdef ANDROID_CHANGES
-#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/if.h>
 #include <android/log.h>
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
@@ -35,7 +35,6 @@
 
 #include "config.h"
 #include "libpfkey.h"
-#include "ipsec_strerror.h"
 #include "gcmalloc.h"
 #include "vmbuf.h"
 #include "crypto_openssl.h"
@@ -51,14 +50,6 @@
 #include "admin.h"
 #include "privsep.h"
 #include "misc.h"
-
-extern void setup(int argc, char **argv);
-int f_local = 0;
-
-static void terminate(int signal)
-{
-    exit(1);
-}
 
 #ifdef ANDROID_CHANGES
 
@@ -77,7 +68,6 @@ static int get_control_and_arguments(int *argc, char ***argv)
         exit(-1);
     }
     close(i);
-    fcntl(control, F_SETFD, FD_CLOEXEC);
 
     args[0] = (*argv)[0];
     for (i = 1; i < 256; ++i) {
@@ -110,7 +100,45 @@ static int get_control_and_arguments(int *argc, char ***argv)
     return control;
 }
 
+static void bind_interface()
+{
+    struct ifreq ifreqs[64];
+    struct ifconf ifconf = {.ifc_len = sizeof(ifreqs), .ifc_req = ifreqs};
+    struct myaddrs *p = lcconf->myaddrs;
+
+    if (ioctl(p->sock, SIOCGIFCONF, &ifconf) == -1) {
+        do_plog(LLV_WARNING, "Cannot list interfaces");
+        return;
+    }
+
+    while (p) {
+        int i = ifconf.ifc_len / sizeof(struct ifreq) - 1;
+        while (i >= 0 && cmpsaddrwop(p->addr, &ifreqs[i].ifr_addr)) {
+            --i;
+        }
+        if (i < 0 || setsockopt(p->sock, SOL_SOCKET, SO_BINDTODEVICE,
+                                ifreqs[i].ifr_name, IFNAMSIZ) == -1) {
+            do_plog(LLV_WARNING, "Cannot bind socket %d to proper interface",
+                    p->sock);
+        }
+        p = p->next;
+    }
+}
+
 #endif
+
+extern void setup(int argc, char **argv);
+int f_local = 0;
+
+static void terminate(int signal)
+{
+    exit(1);
+}
+
+static void terminated()
+{
+    do_plog(LLV_INFO, "Bye\n");
+}
 
 int main(int argc, char **argv)
 {
@@ -124,6 +152,7 @@ int main(int argc, char **argv)
 
     do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
 
+    atexit(terminated);
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
@@ -140,6 +169,7 @@ int main(int argc, char **argv)
     }
 
 #ifdef ANDROID_CHANGES
+    bind_interface();
     send(control, &code, 1, 0);
     setuid(AID_VPN);
 #endif
@@ -208,57 +238,11 @@ char *binsanitize(char *data, size_t length)
     if (output) {
         size_t i;
         for (i = 0; i < length; ++i) {
-            output[i] = isprint(data[i]) ? data[i] : '?';
+            output[i] = (data[i] < ' ' || data[i] > '~') ? '?' : data[i];
         }
         output[length] = '\0';
     }
     return output;
-}
-
-/* libpfkey.h */
-
-ipsec_policy_t ipsec_set_policy(__ipsec_const char *message, int length)
-{
-    struct sadb_x_policy *p;
-    int direction;
-
-    if (!strcmp("in bypass", message)) {
-        direction = IPSEC_DIR_INBOUND;
-    } else if (!strcmp("out bypass", message)) {
-        direction = IPSEC_DIR_OUTBOUND;
-    } else {
-        __ipsec_errcode = EIPSEC_INVAL_POLICY;
-        return NULL;
-    }
-
-    p = calloc(1, sizeof(struct sadb_x_policy));
-    p->sadb_x_policy_len = PFKEY_UNIT64(sizeof(struct sadb_x_policy));
-    p->sadb_x_policy_exttype = SADB_X_EXT_POLICY;
-    p->sadb_x_policy_type = IPSEC_POLICY_BYPASS;
-    p->sadb_x_policy_dir = direction;
-#ifdef HAVE_PFKEY_POLICY_PRIORITY
-    p->sadb_x_policy_priority = PRIORITY_DEFAULT;
-#endif
-    __ipsec_errcode = EIPSEC_NO_ERROR;
-    return (ipsec_policy_t)p;
-}
-
-int ipsec_get_policylen(ipsec_policy_t policy)
-{
-    return policy ? PFKEY_EXTLEN(policy) : -1;
-}
-
-/* grabmyaddr.h */
-
-int getsockmyaddr(struct sockaddr *addr)
-{
-    struct myaddrs *p;
-    for (p = lcconf->myaddrs; p; p = p->next) {
-        if (cmpsaddrstrict(addr, p->addr) == 0) {
-            return p->sock;
-        }
-    }
-    return -1;
 }
 
 /* privsep.h */
@@ -300,6 +284,19 @@ vchar_t *privsep_getpsk(const char *key, int size)
 int privsep_script_exec(char *script, int name, char * const *environ)
 {
     return 0;
+}
+
+/* grabmyaddr.h */
+
+int getsockmyaddr(struct sockaddr *addr)
+{
+    struct myaddrs *p;
+    for (p = lcconf->myaddrs; p; p = p->next) {
+        if (cmpsaddrstrict(addr, p->addr) == 0) {
+            return p->sock;
+        }
+    }
+    return -1;
 }
 
 /* misc.h */

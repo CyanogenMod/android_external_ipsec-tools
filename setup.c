@@ -17,9 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netdb.h>
 
@@ -90,6 +90,7 @@ static void set_default()
     remoteconf.cacerttype = ISAKMP_CERT_X509SIGN;
     remoteconf.send_cert = TRUE;
     remoteconf.send_cr = TRUE;
+    remoteconf.gen_policy = TRUE;
     remoteconf.retry_counter = LC_DEFAULT_RETRY_COUNTER;
     remoteconf.retry_interval = LC_DEFAULT_RETRY_INTERVAL;
     remoteconf.nat_traversal = TRUE;
@@ -111,40 +112,34 @@ static void set_address(char *server, char *port)
 #ifndef INET6
         .ai_family = AF_INET,
 #else
-        .ai_faimly = AF_UNSPEC
+        .ai_family = AF_UNSPEC,
 #endif
         .ai_socktype = SOCK_DGRAM,
     };
     struct addrinfo *r;
-    socklen_t len;
-    int s;
 
     if (getaddrinfo(server, port, &hints, &r) != 0) {
-        plog(LLV_ERROR, "set_address", NULL, "Cannot resolve server address");
+        do_plog(LLV_ERROR, "Cannot resolve server address\n");
         exit(1);
     }
     if (r->ai_next) {
-        plog(LLV_WARNING, "set_address", NULL, "Multiple server address found");
+        do_plog(LLV_WARNING, "Multiple server address found\n");
     }
     remoteconf.remote = dupsaddr(r->ai_addr);
-    myaddrs[0].addr = dupsaddr(r->ai_addr);
+    freeaddrinfo(r);
 
-    len = r->ai_addrlen;
-    s = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-    if (s == -1 || connect(s, r->ai_addr, r->ai_addrlen) == -1 ||
-        getsockname(s, myaddrs[0].addr, &len) == -1) {
-        plog(LLV_ERROR, "set_address", NULL, "Cannot get local address");
+    myaddrs[0].addr = getlocaladdr(remoteconf.remote);
+    if (!myaddrs[0].addr) {
+        do_plog(LLV_ERROR, "Cannot get local address\n");
         exit(1);
     }
-    close(s);
-    freeaddrinfo(r);
 }
 
 static void add_proposal(int auth, int hash, int encryption, int length)
 {
     struct isakmpsa *p = calloc(1, sizeof(struct isakmpsa));
     p->prop_no = 1;
-    p->lifetime = 3600;
+    p->lifetime = OAKLEY_ATTR_SA_LD_SEC_DEFAULT;
     p->enctype = encryption;
     p->encklen = length;
     p->authmethod = auth;
@@ -202,10 +197,11 @@ static void spdadd(struct sockaddr *local, struct sockaddr *remote)
         struct sadb_x_policy p;
         struct sadb_x_ipsecrequest q;
     } policy;
-    int mask = (local->sa_family == AF_INET) ? 32 : 128;
+    int mask = (local->sa_family == AF_INET) ? sizeof(struct in_addr) * 8 :
+               sizeof(struct in6_addr) * 8;
     int key = pfkey_open();
     if (key == -1) {
-        plog(LLV_ERROR, "spdadd", NULL, "Cannot create KEY socket");
+        do_plog(LLV_ERROR, "Cannot create KEY socket\n");
         exit(1);
     }
 
@@ -226,10 +222,11 @@ static void spdadd(struct sockaddr *local, struct sockaddr *remote)
         pfkey_send_spdflush(key) <= 0 ||
         pfkey_send_spdadd(key, local, mask, remote, mask, IPPROTO_UDP,
                           (caddr_t)&policy, sizeof(policy), 0) <= 0) {
-        plog(LLV_ERROR, "spdadd", NULL, "Cannot initialize SA and SPD");
+        do_plog(LLV_ERROR, "Cannot initialize SA and SPD\n");
         exit(1);
     }
     pfkey_close(key);
+    atexit(flush);
 }
 
 void setup(int argc, char **argv)
@@ -247,8 +244,6 @@ void setup(int argc, char **argv)
     set_address(argv[1], argv[2]);
 
     /* Initialize SA and SPD. */
-    atexit(flush);
-    set_port(myaddrs[0].addr, 0);
     spdadd(myaddrs[0].addr, remoteconf.remote);
 
     /* Set local port and remote port. */
