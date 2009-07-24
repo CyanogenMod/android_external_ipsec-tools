@@ -501,12 +501,28 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 #else
 	if (CAfile) {
 		BIO *bio = BIO_from_keystore(CAfile);
-		if (bio) {
-			x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-			X509_STORE_add_cert(cert_ctx, x509);
-			X509_free(x509);
-			BIO_free(bio);
+		STACK_OF(X509_INFO) *stack;
+		X509_INFO *info;
+		int i;
+
+		if (!bio) {
+			goto end;
 		}
+		stack = PEM_X509_INFO_read_bio(bio, NULL, NULL, NULL);
+		BIO_free(bio);
+		if (!stack) {
+			goto end;
+		}
+		for (i = 0; i < sk_X509_INFO_num(stack); ++i) {
+			info = sk_X509_INFO_value(stack, i);
+			if (info->x509) {
+				X509_STORE_add_cert(cert_ctx, info->x509);
+			}
+			if (info->crl) {
+				X509_STORE_add_crl(cert_ctx, info->crl);
+			}
+		}
+		sk_X509_INFO_pop_free(stack, X509_INFO_free);
 	}
 #endif
 
