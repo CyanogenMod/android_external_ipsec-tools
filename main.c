@@ -150,32 +150,32 @@ int main(int argc, char **argv)
     unsigned char code = argc - 1;
 #endif
 
-    do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
-
-    atexit(terminated);
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
     signal(SIGPIPE, SIG_IGN);
+    setup(argc, argv);
+
+    do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
+    atexit(terminated);
 
     eay_init();
     oakley_dhinit();
     compute_vendorids();
     sched_init();
-    setup(argc, argv);
 
     if (pfkey_init() < 0 || isakmp_init() < 0) {
         exit(1);
     }
 
+#ifdef ENABLE_NATT
+    natt_keepalive_init();
+#endif
+
 #ifdef ANDROID_CHANGES
     bind_interface();
     send(control, &code, 1, 0);
     setuid(AID_VPN);
-#endif
-
-#ifdef ENABLE_NATT
-    natt_keepalive_init();
 #endif
 
     FD_ZERO(&fdset);

@@ -2718,6 +2718,8 @@ pk_recvspdflush(mhp)
 	return 0;
 }
 
+#ifndef ANDROID_PATCHED
+
 /*
  * send error against acquire message to kenrel.
  */
@@ -2753,6 +2755,15 @@ pk_sendeacquire(iph2)
 
 	return 0;
 }
+
+#else
+
+int pk_sendeacquire(struct ph2handle *iph2)
+{
+	exit(1);
+}
+
+#endif
 
 /*
  * check if the algorithm is supported or not.

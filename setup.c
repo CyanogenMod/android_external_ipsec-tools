@@ -63,8 +63,8 @@ static void set_default()
     localconf.pad_randomlen = LC_DEFAULT_PAD_RANDOM;
     localconf.pad_strict = LC_DEFAULT_PAD_STRICT;
     localconf.pad_excltail = LC_DEFAULT_PAD_EXCLTAIL;
-    localconf.retry_counter = LC_DEFAULT_RETRY_COUNTER;
-    localconf.retry_interval = LC_DEFAULT_RETRY_INTERVAL;
+    localconf.retry_counter = 10;
+    localconf.retry_interval = 3;
     localconf.count_persend = LC_DEFAULT_COUNT_PERSEND;
     localconf.secret_size = LC_DEFAULT_SECRETSIZE;
     localconf.retry_checkph1 = LC_DEFAULT_RETRY_CHECKPH1;
