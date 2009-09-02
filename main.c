@@ -156,7 +156,7 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     setup(argc, argv);
 
-    do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
+    do_plog(LLV_INFO, "ipsec-tools 0.7.3 (http://ipsec-tools.sf.net)\n");
     atexit(terminated);
 
     eay_init();
