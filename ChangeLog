@@ -1,3 +1,35 @@
+2009-08-13  tag ipsec-tools-0_7_3
+
+2009-08-13  Yvan Vanhullebus <vanhu@netasq.com>
+
+	* NEWS, configure.ac: 0.7.3 release
+
+	* src/racoon/oakley.c: fixed a potential DoS in
+	  oakley_do_decrypt(), reported by Orange Labs
+
+2009-08-06  Timo Teras <timo.teras@iki.fi>
+
+	* src/setkey/setkey.c: From Paul Wenau: Check fgets return value in
+	  setkey to make gcc happy.
+
+2009-06-19  Timo Teras <timo.teras@iki.fi>
+
+	* src/racoon/ipsec_doi.c: Backport S.P.Zeidler's fix to IPv6
+	  address related stack smashing in ipsecdoi_id2str() from CVS HEAD.
+
+2009-05-18  Timo Teras <timo.teras@iki.fi>
+
+	* src/racoon/isakmp_inf.c: From Tomas Mraz: Remove variable that is
+	  not really used; only referenced while uninitialized causing
+	  valgrind error.
+
+	* src/racoon/nattraversal.c: From Tomas Mraz: Fix natt_flags check.
+
+2009-04-29  Timo Teras <timo.teras@iki.fi>
+
+	* src/racoon/crypto_openssl.c: From Ross Meng: Fix a memory leak in
+	  X509 certificate validation.
+
 2009-04-22  tag ipsec-tools-0_7_2
 
 2009-04-22  Timo Teras <timo.teras@iki.fi>
