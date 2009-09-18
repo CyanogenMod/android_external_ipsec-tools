@@ -440,16 +440,10 @@ eay_cmp_asn1dn(n1, n2)
 static BIO *BIO_from_keystore(char *key)
 {
 	BIO *bio = NULL;
-	char *value;
-	int size;
-
-	value = keystore_get(key, &size);
-	if (value) {
-		bio = BIO_new(BIO_s_mem());
-		if (bio) {
-			BIO_write(bio, value, size);
-		}
-		free(value);
+	char value[KEYSTORE_MESSAGE_SIZE];
+	int length = keystore_get(key, value);
+	if (length != -1 && (bio = BIO_new(BIO_s_mem())) != NULL) {
+		BIO_write(bio, value, length);
 	}
 	return bio;
 }
