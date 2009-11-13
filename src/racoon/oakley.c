@@ -1,4 +1,4 @@
-/*	$NetBSD: oakley.c,v 1.9.6.3 2008/03/06 17:00:25 vanhu Exp $	*/
+/*	$NetBSD: oakley.c,v 1.9.6.4 2009/08/13 09:18:45 vanhu Exp $	*/
 
 /* Id: oakley.c,v 1.32 2006/05/26 12:19:46 manubsd Exp */
 
@@ -1372,6 +1372,7 @@ oakley_validate_auth(iph1)
 					return ISAKMP_INTERNAL_ERROR;
 #else
 					break;
+
 				case ISAKMP_CERT_PLAINRSA:
 					error = get_plainrsa_fromlocal(iph1, 0);
 					break;
@@ -1638,12 +1639,14 @@ oakley_getmycert(iph1)
 			if (iph1->cert)
 				return 0;
 			return get_cert_fromlocal(iph1, 1);
+
 #ifndef ANDROID_PATCHED
 		case ISAKMP_CERT_PLAINRSA:
 			if (iph1->rsa)
 				return 0;
 			return get_plainrsa_fromlocal(iph1, 1);
 #endif
+
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
 			     "Unknown certtype #%d\n",
@@ -3128,7 +3131,7 @@ oakley_do_decrypt(iph1, msg, ivdp, ivep)
 	/* do decrypt */
 	new = alg_oakley_encdef_decrypt(iph1->approval->enctype,
 					buf, iph1->key, ivdp);
-	if (new == NULL) {
+	if (new == NULL || new->v == NULL || new->l == 0) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"decryption %d failed.\n", iph1->approval->enctype);
 		goto end;

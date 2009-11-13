@@ -6,7 +6,7 @@
 #undef ENABLE_DPD
 
 #define HAVE_OPENSSL_AES_H
-#define HAVE_OPENSSL_ENGINE_H
+#undef HAVE_OPENSSL_ENGINE_H
 #define WITH_SHA2
 #define HAVE_SHA2_IN_SHA_H
 
