@@ -434,6 +434,7 @@ quick_i2recv(iph2, msg0)
 				/* for IDcr */
 				vp = iph2->id_p;
 			}
+
 #ifndef ANDROID_PATCHED
 			if (memcmp(vp->v, (caddr_t)pa->ptr + sizeof(struct isakmp_gen), vp->l)) {
 

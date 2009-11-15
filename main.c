@@ -156,7 +156,7 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     setup(argc, argv);
 
-    do_plog(LLV_INFO, "ipsec-tools 0.7.2 (http://ipsec-tools.sf.net)\n");
+    do_plog(LLV_INFO, "ipsec-tools 0.7.3 (http://ipsec-tools.sf.net)\n");
     atexit(terminated);
 
     eay_init();
@@ -266,12 +266,10 @@ vchar_t *privsep_getpsk(const char *key, int size)
 {
     vchar_t *p = NULL;
 #ifdef ANDROID_CHANGES
-    char *value = keystore_get(key, &size);
-    if (value) {
-        if ((p = vmalloc(size)) != NULL) {
-            memcpy(p->v, value, p->l);
-        }
-        free(value);
+    char value[KEYSTORE_MESSAGE_SIZE];
+    int length = keystore_get(key, value);
+    if (length != -1 && (p = vmalloc(length)) != NULL) {
+        memcpy(p->v, value, length);
     }
 #else
     if (key && (p = vmalloc(size)) != NULL) {
