@@ -267,7 +267,7 @@ vchar_t *privsep_getpsk(const char *key, int size)
     vchar_t *p = NULL;
 #ifdef ANDROID_CHANGES
     char value[KEYSTORE_MESSAGE_SIZE];
-    int length = keystore_get(key, value);
+    int length = keystore_get(key, size, value);
     if (length != -1 && (p = vmalloc(length)) != NULL) {
         memcpy(p->v, value, length);
     }
