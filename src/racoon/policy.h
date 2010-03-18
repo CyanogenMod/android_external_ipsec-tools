@@ -111,7 +111,7 @@ struct ipsecrequest {
 #ifdef HAVE_PFKEY_POLICY_PRIORITY
 #define KEY_SETSECSPIDX(_dir, s, d, ps, pd, ulp, _priority, _created, idx)              \
 do {                                                                         \
-	bzero((idx), sizeof(struct policyindex));                            \
+	memset((idx), 0, sizeof(struct policyindex));                        \
 	(idx)->dir = (_dir);                                                 \
 	(idx)->prefs = (ps);                                                 \
 	(idx)->prefd = (pd);                                                 \
@@ -124,7 +124,7 @@ do {                                                                         \
 #else
 #define KEY_SETSECSPIDX(_dir, s, d, ps, pd, ulp, _created, idx)              \
 do {                                                                         \
-	bzero((idx), sizeof(struct policyindex));                            \
+	memset((idx), 0, sizeof(struct policyindex));                        \
 	(idx)->dir = (_dir);                                                 \
 	(idx)->prefs = (ps);                                                 \
 	(idx)->prefd = (pd);                                                 \
