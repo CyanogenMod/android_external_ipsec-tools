@@ -261,6 +261,7 @@ void setup(int argc, char **argv)
         pre_shared_key = argv[3];
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
     } else {
+        remoteconf.idvtype = IDTYPE_ASN1DN;
         remoteconf.myprivfile = argv[3];
         remoteconf.mycertfile = argv[4];
         remoteconf.cacertfile = argv[5];
