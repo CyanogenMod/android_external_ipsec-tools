@@ -39,6 +39,7 @@
 #include <sys/queue.h>
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -250,6 +251,7 @@ xauth_attr_reply(iph1, attr, id)
 	}
 
 	
+#ifndef ANDROID_CHANGES
 	if ((xst->authdata.generic.usr != NULL) &&
 	   (xst->authdata.generic.pwd != NULL)) {
 		int port;
@@ -349,6 +351,7 @@ skip_auth:
 			return xauth_reply(iph1, port, id, res);
 		}
 	}
+#endif
 
 	return 0;
 }
@@ -1179,6 +1182,7 @@ ldap_group_end:
 
 #endif
 
+#ifndef ANDROID_CHANGES
 int
 xauth_login_system(usr, pwd)
 	char *usr;
@@ -1215,6 +1219,7 @@ xauth_login_system(usr, pwd)
 
 	return -1;
 }
+#endif
 
 int
 xauth_group_system(usr, grp)

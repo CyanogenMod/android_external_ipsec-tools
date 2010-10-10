@@ -64,6 +64,7 @@
 #include "evt.h"
 #include "isakmp.h"
 #ifdef ENABLE_HYBRID
+#include <arpa/inet.h>
 #include "isakmp_xauth.h"  
 #include "isakmp_cfg.h"
 #endif
