@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2009 The Android Open Source Project
+# Copyright (C) 2011 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +17,10 @@
 ifneq ($(TARGET_SIMULATOR),true)
 
 LOCAL_PATH := $(call my-dir)
+
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	src/libipsec/pfkey.c \
-	src/libipsec/ipsec_strerror.c \
 	src/racoon/isakmp.c \
 	src/racoon/isakmp_agg.c \
 	src/racoon/isakmp_base.c \
@@ -58,6 +57,8 @@ LOCAL_C_INCLUDES += \
 	external/openssl/include \
 	frameworks/base/cmds/keystore
 
+LOCAL_STATIC_LIBRARIES := libipsec
+
 LOCAL_SHARED_LIBRARIES := libcutils libcrypto
 
 LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
@@ -65,5 +66,26 @@ LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
 LOCAL_MODULE := racoon
 
 include $(BUILD_EXECUTABLE)
+
+##########################################################################
+
+include $(CLEAR_VARS)
+
+LOCAL_SRC_FILES := \
+	src/libipsec/pfkey.c \
+	src/libipsec/ipsec_strerror.c
+
+LOCAL_CFLAGS := -DHAVE_CONFIG_H
+
+LOCAL_C_INCLUDES += \
+	$(LOCAL_PATH) \
+	$(LOCAL_PATH)/src/include-glibc \
+	$(LOCAL_PATH)/src/libipsec
+
+LOCAL_MODULE := libipsec
+
+LOCAL_MODULE_TAGS := optional
+
+include $(BUILD_STATIC_LIBRARY)
 
 endif

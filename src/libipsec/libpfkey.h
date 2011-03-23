@@ -37,6 +37,10 @@
 #ifndef KAME_LIBPFKEY_H
 #define KAME_LIBPFKEY_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PRIORITY_LOW        0xC0000000
 #define PRIORITY_DEFAULT    0x80000000
 #define PRIORITY_HIGH       0x40000000
@@ -212,6 +216,10 @@ sysdep_sa_len (const struct sockaddr *sa)
 #else
   return sa->sa_len;
 #endif
+}
+#endif
+
+#ifdef __cplusplus
 }
 #endif
 
