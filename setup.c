@@ -49,6 +49,7 @@ static struct localconf localconf;
 static struct remoteconf remoteconf;
 static struct sainfo sainfo;
 static char *pre_shared_key;
+static struct sockaddr target;
 
 struct localconf *lcconf = &localconf;
 char *script_names[SCRIPT_MAX + 1];
@@ -178,15 +179,51 @@ static void add_sainfo_algorithm(int class, int algorithm, int length)
     }
 }
 
+static int match(struct sadb_address *address)
+{
+    if (address) {
+        struct sockaddr *source = PFKEY_ADDR_SADDR(address);
+        return !cmpsaddrwop(source, &target);
+    }
+    return 0;
+}
+
 /* flush; spdflush; */
 static void flush()
 {
+    struct sadb_msg *p;
+    int replies = 0;
     int key = pfkey_open();
-    if (key != -1) {
-        pfkey_send_flush(key, SADB_SATYPE_UNSPEC);
-        pfkey_send_spdflush(key);
-        pfkey_close(key);
+
+    if (pfkey_send_dump(key, SADB_SATYPE_UNSPEC) <= 0 ||
+        pfkey_send_spddump(key) <= 0) {
+        do_plog(LLV_ERROR, "Cannot dump SAD and SPD");
+        exit(1);
     }
+
+    for (p = NULL; replies < 2 && (p = pfkey_recv(key)) != NULL; free(p)) {
+        caddr_t q[SADB_EXT_MAX + 1];
+
+        if (p->sadb_msg_type != SADB_DUMP &&
+            p->sadb_msg_type != SADB_X_SPDDUMP) {
+            continue;
+        }
+        replies += !p->sadb_msg_seq;
+
+        if (p->sadb_msg_errno || pfkey_align(p, q) || pfkey_check(q)) {
+            continue;
+        }
+        if (match((struct sadb_address *)q[SADB_EXT_ADDRESS_SRC]) ||
+            match((struct sadb_address *)q[SADB_EXT_ADDRESS_DST])) {
+            p->sadb_msg_type = (p->sadb_msg_type == SADB_DUMP) ?
+                               SADB_DELETE : SADB_X_SPDDELETE;
+            p->sadb_msg_reserved = 0;
+            p->sadb_msg_seq = 0;
+            pfkey_send(key, p, PFKEY_UNUNIT64(p->sadb_msg_len));
+        }
+    }
+
+    pfkey_close(key);
 }
 
 /* flush; spdflush;
@@ -197,13 +234,9 @@ static void spdadd(struct sockaddr *local, struct sockaddr *remote)
         struct sadb_x_policy p;
         struct sadb_x_ipsecrequest q;
     } policy;
-    int mask = (local->sa_family == AF_INET) ? sizeof(struct in_addr) * 8 :
+    int prefix = (local->sa_family == AF_INET) ? sizeof(struct in_addr) * 8 :
                sizeof(struct in6_addr) * 8;
     int key = pfkey_open();
-    if (key == -1) {
-        do_plog(LLV_ERROR, "Cannot create KEY socket\n");
-        exit(1);
-    }
 
     memset(&policy, 0, sizeof(policy));
     policy.p.sadb_x_policy_len = PFKEY_UNIT64(sizeof(policy));
@@ -218,11 +251,11 @@ static void spdadd(struct sockaddr *local, struct sockaddr *remote)
     policy.q.sadb_x_ipsecrequest_mode = IPSEC_MODE_TRANSPORT;
     policy.q.sadb_x_ipsecrequest_level = IPSEC_LEVEL_REQUIRE;
 
-    if (pfkey_send_flush(key, SADB_SATYPE_UNSPEC) <= 0 ||
-        pfkey_send_spdflush(key) <= 0 ||
-        pfkey_send_spdadd(key, local, mask, remote, mask, IPPROTO_UDP,
+    target = *remote;
+    flush();
+    if (pfkey_send_spdadd(key, local, prefix, remote, prefix, IPPROTO_UDP,
                           (caddr_t)&policy, sizeof(policy), 0) <= 0) {
-        do_plog(LLV_ERROR, "Cannot initialize SA and SPD\n");
+        do_plog(LLV_ERROR, "Cannot initialize SAD and SPD\n");
         exit(1);
     }
     pfkey_close(key);
@@ -243,7 +276,7 @@ void setup(int argc, char **argv)
     /* Set local address and remote address. */
     set_address(argv[1], argv[2]);
 
-    /* Initialize SA and SPD. */
+    /* Initialize SAD and SPD. */
     spdadd(myaddrs[0].addr, remoteconf.remote);
 
     /* Set local port and remote port. */
