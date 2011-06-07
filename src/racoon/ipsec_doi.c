@@ -3949,6 +3949,7 @@ set_identifier_qual(vpp, type, value, qual)
 				memcpy(new->v + tlen, b, len);
 				tlen += len;
 			}
+			fclose(fp);
 			break;
 		}
 
