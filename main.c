@@ -55,7 +55,7 @@
 
 static int get_control_and_arguments(int *argc, char ***argv)
 {
-    static char *args[256];
+    static char *args[32];
     int control;
     int i;
 
@@ -70,16 +70,19 @@ static int get_control_and_arguments(int *argc, char ***argv)
     close(i);
 
     args[0] = (*argv)[0];
-    for (i = 1; i < 256; ++i) {
-        unsigned char length;
-        if (recv(control, &length, 1, 0) != 1) {
+    for (i = 1; i < 32; ++i) {
+        unsigned char bytes[2];
+        if (recv(control, &bytes[0], 1, 0) != 1
+            || recv(control, &bytes[1], 1, 0) != 1) {
             do_plog(LLV_ERROR, "Cannot get argument length");
             exit(-1);
-        }
-        if (length == 0xFF) {
-            break;
         } else {
+            int length = bytes[0] << 8 | bytes[1];
             int offset = 0;
+
+            if (length == 0xFFFF) {
+                break;
+            }
             args[i] = malloc(length + 1);
             while (offset < length) {
                 int n = recv(control, &args[i][offset], length - offset, 0);
@@ -147,7 +150,6 @@ int main(int argc, char **argv)
     struct myaddrs *p;
 #ifdef ANDROID_CHANGES
     int control = get_control_and_arguments(&argc, &argv);
-    unsigned char code = argc - 1;
 #endif
 
     signal(SIGHUP, terminate);
@@ -174,7 +176,6 @@ int main(int argc, char **argv)
 
 #ifdef ANDROID_CHANGES
     bind_interface();
-    send(control, &code, 1, 0);
     setuid(AID_VPN);
 #endif
 
@@ -265,17 +266,9 @@ vchar_t *privsep_eay_get_pkcs1privkey(char *file)
 vchar_t *privsep_getpsk(const char *key, int size)
 {
     vchar_t *p = NULL;
-#ifdef ANDROID_CHANGES
-    char value[KEYSTORE_MESSAGE_SIZE];
-    int length = keystore_get(key, size, value);
-    if (length != -1 && (p = vmalloc(length)) != NULL) {
-        memcpy(p->v, value, length);
-    }
-#else
     if (key && (p = vmalloc(size)) != NULL) {
         memcpy(p->v, key, p->l);
     }
-#endif
     return p;
 }
 
