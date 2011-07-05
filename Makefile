@@ -3,6 +3,10 @@ all:
 	-Isrc/racoon -Isrc/racoon/missing -DHAVE_CONFIG_H -lcrypto \
 	src/libipsec/pfkey.c \
 	src/libipsec/ipsec_strerror.c \
+	src/racoon/algorithm.c \
+	src/racoon/crypto_openssl.c \
+	src/racoon/genlist.c \
+	src/racoon/handler.c \
 	src/racoon/isakmp.c \
 	src/racoon/isakmp_agg.c \
 	src/racoon/isakmp_base.c \
@@ -11,21 +15,18 @@ all:
 	src/racoon/isakmp_inf.c \
 	src/racoon/isakmp_newg.c \
 	src/racoon/isakmp_quick.c \
-	src/racoon/handler.c \
-	src/racoon/pfkey.c \
-	src/racoon/ipsec_doi.c \
-	src/racoon/oakley.c \
-	src/racoon/vendorid.c \
-	src/racoon/policy.c \
-	src/racoon/crypto_openssl.c \
-	src/racoon/algorithm.c \
-	src/racoon/proposal.c \
-	src/racoon/strnames.c \
-	src/racoon/schedule.c \
-	src/racoon/str2val.c \
-	src/racoon/genlist.c \
-	src/racoon/vmbuf.c \
-	src/racoon/sockmisc.c \
+	src/racoon/ipsec_doi-0.7.3.c \
 	src/racoon/nattraversal.c \
+	src/racoon/oakley.c \
+	src/racoon/pfkey.c \
+	src/racoon/policy.c \
+	src/racoon/proposal.c \
+	src/racoon/remoteconf.c \
+	src/racoon/schedule.c \
+	src/racoon/sockmisc.c \
+	src/racoon/str2val.c \
+	src/racoon/strnames.c \
+	src/racoon/vendorid.c \
+	src/racoon/vmbuf.c \
 	main.c \
 	setup.c

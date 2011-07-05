@@ -1,4 +1,4 @@
-/*	$NetBSD: oakley.h,v 1.5 2006/10/06 12:02:27 manu Exp $	*/
+/*	$NetBSD: oakley.h,v 1.7 2009/03/12 10:57:26 tteras Exp $	*/
 
 /* Id: oakley.h,v 1.13 2005/05/30 20:12:43 fredsen Exp */
 
@@ -89,21 +89,18 @@
 #define OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_R	65010
 #endif
 
-					/*	65500 -> still private
-					 * to avoid clash with GSSAPI_KRB below 
-					 */
-#define FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I	65500
+/*
+ * The following are valid when the Vendor ID is one of
+ * the following:
+ *
+ *	MD5("A GSS-API Authentication Method for IKE")
+ *	MD5("GSSAPI") (recognized by Windows 2000)
+ *	MD5("MS NT5 ISAKMPOAKLEY") (sent by Windows 2000)
+ */
 
+#define OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB	(65001 + 0x10000)
+#define OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB_REAL	65001
 
-	/*
-	 * The following are valid when the Vendor ID is one of
-	 * the following:
-	 *
-	 *	MD5("A GSS-API Authentication Method for IKE")
-	 *	MD5("GSSAPI") (recognized by Windows 2000)
-	 *	MD5("MS NT5 ISAKMPOAKLEY") (sent by Windows 2000)
-	 */
-#define   OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB	65001
 #define OAKLEY_ATTR_GRP_DESC		4 /* B */
 #define   OAKLEY_ATTR_GRP_DESC_MODP768		1
 #define   OAKLEY_ATTR_GRP_DESC_MODP1024		2
@@ -163,13 +160,6 @@ struct dhgroup {
 	vchar_t *order;
 };
 
-/* certificate holder */
-typedef struct cert_t_tag {
-	u_int8_t type;		/* type of CERT, must be same to pl->v[0]*/
-	vchar_t cert;		/* pointer to the CERT */
-	vchar_t *pl;		/* CERT payload minus isakmp general header */
-} cert_t;
-
 struct ph1handle;
 struct ph2handle;
 struct isakmp_ivm;
@@ -200,10 +190,13 @@ extern vchar_t *oakley_ph1hash_common __P((struct ph1handle *, int));
 extern vchar_t *oakley_ph1hash_base_i __P((struct ph1handle *, int));
 extern vchar_t *oakley_ph1hash_base_r __P((struct ph1handle *, int));
 
+extern int oakley_get_certtype __P((vchar_t *));
 extern int oakley_validate_auth __P((struct ph1handle *));
 extern int oakley_getmycert __P((struct ph1handle *));
 extern int oakley_getsign __P((struct ph1handle *));
 extern vchar_t *oakley_getcr __P((struct ph1handle *));
+extern struct payload_list *oakley_append_cr __P((struct payload_list *,
+						  struct ph1handle *));
 extern int oakley_checkcr __P((struct ph1handle *));
 extern int oakley_needcr __P((int));
 struct isakmp_gen;
@@ -214,8 +207,6 @@ extern int oakley_skeyid __P((struct ph1handle *));
 extern int oakley_skeyid_dae __P((struct ph1handle *));
 
 extern int oakley_compute_enckey __P((struct ph1handle *));
-extern cert_t *oakley_newcert __P((void));
-extern void oakley_delcert __P((cert_t *));
 extern int oakley_newiv __P((struct ph1handle *));
 extern struct isakmp_ivm *oakley_newiv2 __P((struct ph1handle *, u_int32_t));
 extern void oakley_delivm __P((struct isakmp_ivm *));
@@ -223,21 +214,5 @@ extern vchar_t *oakley_do_decrypt __P((struct ph1handle *,
 	vchar_t *, vchar_t *, vchar_t *));
 extern vchar_t *oakley_do_encrypt __P((struct ph1handle *,
 	vchar_t *, vchar_t *, vchar_t *));
-
-#ifdef ENABLE_HYBRID
-#define AUTHMETHOD(iph1)						     \
-    (((iph1)->rmconf->xauth &&						     \
-    (iph1)->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I) ? \
-	FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I : (iph1)->approval->authmethod)
-#define RMAUTHMETHOD(iph1)						     \
-    (((iph1)->rmconf->xauth &&						     \
-    (iph1)->rmconf->proposal->authmethod ==                                  \
-	OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I) ?                             \
-	FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I :                                  \
-	(iph1)->rmconf->proposal->authmethod)
-#else
-#define AUTHMETHOD(iph1) (iph1)->approval->authmethod
-#define RMAUTHMETHOD(iph1) (iph1)->rmconf->proposal->authmethod
-#endif /* ENABLE_HYBRID */
 
 #endif /* _OAKLEY_H */

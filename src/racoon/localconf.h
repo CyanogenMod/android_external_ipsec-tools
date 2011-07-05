@@ -1,4 +1,4 @@
-/*	$NetBSD: localconf.h,v 1.4 2006/09/09 16:22:09 manu Exp $	*/
+/*	$NetBSD: localconf.h,v 1.7 2008/12/23 14:04:42 tteras Exp $	*/
 
 /* Id: localconf.h,v 1.13 2005/11/06 18:13:18 monas Exp */
 
@@ -57,10 +57,9 @@
 #define LC_DEFAULT_RETRY_CHECKPH1	30
 #define LC_DEFAULT_WAIT_PH2COMPLETE	30
 #define LC_DEFAULT_NATT_KA_INTERVAL	20
+#define LC_DEFAULT_PFKEY_BUFFER_SIZE	0
 
 #define LC_DEFAULT_SECRETSIZE	16	/* 128 bits */
-
-#define LC_IDENTTYPE_MAX	5	/* XXX */
 
 #define	LC_GSSENC_UTF16LE	0	/* GSS ID in UTF-16LE */
 #define	LC_GSSENC_LATIN1	1	/* GSS ID in ISO-Latin-1 */
@@ -74,18 +73,13 @@ struct localconf {
 	char *chroot;			/* chroot path */
 	u_int16_t port_isakmp;		/* port for isakmp as default */
 	u_int16_t port_isakmp_natt;	/* port for NAT-T use */
-	u_int16_t port_admin;		/* port for admin */
 	int default_af;			/* default address family */
 
 	int sock_admin;
 	int sock_pfkey;
 	int rtsock;			/* routing socket */
 
-	int autograbaddr;
-	struct myaddrs *myaddrs;
-
 	char *pathinfo[LC_PATHTYPE_MAX];
-	vchar_t *ident[LC_IDENTTYPE_MAX]; /* base of Identifier payload. */
 
 	int pad_random;
 	int pad_randomlen;
@@ -118,6 +112,7 @@ struct localconf {
 		 */
 
 	int gss_id_enc;			/* GSS ID encoding to use */
+	int pfkey_buffer_size;		/* Set socket buffer size for pfkey */
 };
 
 extern struct localconf *lcconf;

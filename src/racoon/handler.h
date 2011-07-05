@@ -1,11 +1,11 @@
-/*	$NetBSD: handler.h,v 1.9.6.1 2008/01/11 14:12:01 vanhu Exp $	*/
+/*	$NetBSD: handler.h,v 1.25 2010/11/17 10:40:41 tteras Exp $	*/
 
 /* Id: handler.h,v 1.19 2006/02/25 08:25:12 manubsd Exp */
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -17,7 +17,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -41,6 +41,8 @@
 
 #include "isakmp_var.h"
 #include "oakley.h"
+#include "schedule.h"
+#include "evt.h"
 
 /* Phase 1 handler */
 /*
@@ -93,8 +95,9 @@
 #define PHASE1ST_MSG3SENT		7
 #define PHASE1ST_MSG4RECEIVED		8
 #define PHASE1ST_ESTABLISHED		9
-#define PHASE1ST_EXPIRED		10
-#define PHASE1ST_MAX			11
+#define PHASE1ST_DYING			10
+#define PHASE1ST_EXPIRED		11
+#define PHASE1ST_MAX			12
 
 /* About address semantics in each case.
  *			initiator(addr=I)	responder(addr=R)
@@ -131,6 +134,7 @@ struct ph1handle {
 	u_int8_t flags;			/* Flags */
 	u_int32_t msgid;		/* message id */
 
+	u_int32_t vendorid_mask;	/* bitmask of received supported vendor ids*/
 #ifdef ENABLE_NATT
 	struct ph1natt_options *natt_options;	/* Selected NAT-T IKE version */
 	u_int32_t natt_flags;		/* NAT-T related flags */
@@ -140,9 +144,9 @@ struct ph1handle {
 	struct isakmp_frag_item *frag_chain;	/* Received fragments */
 #endif
 
-	struct sched *sce;		/* schedule for expire */
+	struct sched sce;		/* schedule for expire */
 
-	struct sched *scr;		/* schedule for resend */
+	struct sched scr;		/* schedule for resend */
 	int retry_counter;		/* for resend. */
 	vchar_t *sendbuf;		/* buffer for re-sending */
 
@@ -160,10 +164,10 @@ struct ph1handle {
 	vchar_t *hash;			/* HASH minus general header */
 	vchar_t *sig;			/* SIG minus general header */
 	vchar_t *sig_p;			/* peer's SIG minus general header */
-	cert_t *cert;			/* CERT minus general header */
-	cert_t *cert_p;			/* peer's CERT minus general header */
-	cert_t *crl_p;			/* peer's CRL minus general header */
-	cert_t *cr_p;			/* peer's CR not including general */
+	vchar_t *cert;			/* CERT minus general header */
+	vchar_t *cert_p;		/* peer's CERT minus general header */
+	vchar_t *crl_p;			/* peer's CRL minus general header */
+	vchar_t *cr_p;			/* peer's CR not including general */
 	RSA *rsa;			/* my RSA key */
 	RSA *rsa_p;			/* peer's RSA key */
 	struct genlist *rsa_candidates;	/* possible candidates for peer's RSA key */
@@ -190,6 +194,7 @@ struct ph1handle {
 	struct isakmp_pl_hash *pl_hash;	/* pointer to hash payload */
 
 	time_t created;			/* timestamp for establish */
+	int initial_contact_received;	/* set if initial contact received */
 #ifdef ENABLE_STATS
 	struct timeval start;
 	struct timeval end;
@@ -197,10 +202,10 @@ struct ph1handle {
 
 #ifdef ENABLE_DPD
 	int		dpd_support;	/* Does remote supports DPD ? */
-	time_t		dpd_lastack;	/* Last ack received */
-	u_int16_t	dpd_seq;		/* DPD seq number to receive */
+	u_int32_t	dpd_last_ack;
+	u_int32_t	dpd_seq;		/* DPD seq number to receive */
 	u_int8_t	dpd_fails;		/* number of failures */
-	struct sched	*dpd_r_u;
+	struct sched	dpd_r_u;
 #endif
 
 	u_int32_t msgid2;		/* msgid counter for Phase 2 */
@@ -210,8 +215,14 @@ struct ph1handle {
 	LIST_ENTRY(ph1handle) chain;
 #ifdef ENABLE_HYBRID
 	struct isakmp_cfg_state *mode_cfg;	/* ISAKMP mode config state */
-#endif       
+#endif
+	EVT_LISTENER_LIST(evt_listeners);
+};
 
+/* For limiting enumeration of ph1 tree */
+struct ph1selector {
+	struct sockaddr *local;
+	struct sockaddr *remote;
 };
 
 /* Phase 2 handler */
@@ -244,23 +255,44 @@ struct ph1handle {
 #define PHASE2ST_MAX		11
 
 struct ph2handle {
-	struct sockaddr *src;		/* my address of SA. */
-	struct sockaddr *dst;		/* peer's address of SA. */
+	/* source and destination addresses used for IKE exchange. Might
+	 * differ from source and destination of SA. On the initiator,
+	 * they are tweaked if a hint is available in the SPD (set by
+	 * MIGRATE for instance). Otherwise they are the source and
+	 * destination of SA for transport mode and the tunnel endpoints
+	 * for tunnel mode */
+	struct sockaddr *src;
+	struct sockaddr *dst;
 
-		/*
-		 * copy ip address from ID payloads when ID type is ip address.
-		 * In other case, they must be null.
-		 */
-	struct sockaddr *src_id;
-	struct sockaddr *dst_id;
+	/* source and destination addresses of the SA in the case addresses
+	 * used for IKE exchanges (src and dst) do differ. On the initiator,
+	 * they are set (if needed) in pk_recvacquire(). On the responder,
+	 * they are _derived_ from the local and remote parameters of the
+	 * SP, if available. */
+	struct sockaddr *sa_src;
+	struct sockaddr *sa_dst;
+
+	/* Store our Phase 2 ID and the peer ID (ID minus general header).
+	 * On the initiator, they are set during ACQUIRE processing.
+	 * On the responder, they are set from the content of ID payload
+	 * in quick_r1recv(). Then, if they are of type address or
+	 * tunnel, they are compared to sainfo selectors.
+	 */
+	vchar_t *id;			/* ID minus gen header */
+	vchar_t *id_p;			/* peer's ID minus general header */
+
+#ifdef ENABLE_NATT
+	struct sockaddr *natoa_src;	/* peer's view of my address */
+	struct sockaddr *natoa_dst;	/* peer's view of his address */
+#endif
 
 	u_int32_t spid;			/* policy id by kernel */
 
 	int status;			/* ipsec sa status */
 	u_int8_t side;			/* INITIATOR or RESPONDER */
 
-	struct sched *sce;		/* schedule for expire */
-	struct sched *scr;		/* schedule for resend */
+	struct sched sce;		/* schedule for expire */
+	struct sched scr;		/* schedule for resend */
 	int retry_counter;		/* for resend. */
 	vchar_t *sendbuf;		/* buffer for re-sending */
 	vchar_t *msg1;			/* buffer for re-sending */
@@ -288,6 +320,8 @@ struct ph2handle {
 	struct sainfo *sainfo;		/* place holder of sainfo */
 	struct saprop *proposal;	/* SA(s) proposal. */
 	struct saprop *approval;	/* SA(s) approved. */
+	u_int32_t lifetime_secs;	/* responder lifetime (seconds) */
+	u_int32_t lifetime_kb;		/* responder lifetime (kbytes) */
 	caddr_t spidx_gen;		/* policy from peer's proposal */
 
 	struct dhgroup *pfsgrp;		/* DH; prime number */
@@ -295,8 +329,6 @@ struct ph2handle {
 	vchar_t *dhpub;			/* DH; public value */
 	vchar_t *dhpub_p;		/* DH; partner's public value */
 	vchar_t *dhgxy;			/* DH; shared secret */
-	vchar_t *id;			/* ID minus gen header */
-	vchar_t *id_p;			/* peer's ID minus general header */
 	vchar_t *nonce;			/* nonce value in phase 2 */
 	vchar_t *nonce_p;		/* partner's nonce value in phase 2 */
 
@@ -320,6 +352,14 @@ struct ph2handle {
 
 	LIST_ENTRY(ph2handle) chain;
 	LIST_ENTRY(ph2handle) ph1bind;	/* chain to ph1handle */
+	EVT_LISTENER_LIST(evt_listeners);
+};
+
+/* For limiting enumeration of ph2 tree */
+struct ph2selector {
+	u_int32_t spid;
+	struct sockaddr *src;
+	struct sockaddr *dst;
 };
 
 /*
@@ -339,10 +379,7 @@ struct recvdpkt {
 	vchar_t *hash;			/* hash of the received packet */
 	vchar_t *sendbuf;		/* buffer for the response */
 	int retry_counter;		/* how many times to send */
-	time_t time_send;		/* timestamp to send a packet */
-	time_t created;			/* timestamp to create a queue */
-
-	struct sched *scr;		/* schedule for resend, may not used */
+	struct timeval time_send;	/* timestamp of previous send */
 
 	LIST_ENTRY(recvdpkt) chain;
 };
@@ -413,7 +450,7 @@ struct ph1dump {
 	struct sockaddr_storage remote;
 	struct sockaddr_storage local;
 	u_int8_t version;
-	u_int8_t etype;	
+	u_int8_t etype;
 	time_t created;
 	int ph2cnt;
 };
@@ -425,25 +462,42 @@ struct policyindex;
 
 extern struct ph1handle *getph1byindex __P((isakmp_index *));
 extern struct ph1handle *getph1byindex0 __P((isakmp_index *));
-extern struct ph1handle *getph1byaddr __P((struct sockaddr *,
-										   struct sockaddr *, int));
-extern struct ph1handle *getph1byaddrwop __P((struct sockaddr *,
-	struct sockaddr *));
-extern struct ph1handle *getph1bydstaddrwop __P((struct sockaddr *));
+
+extern int enumph1 __P((struct ph1selector *ph1sel,
+			int (* enum_func)(struct ph1handle *iph1, void *arg),
+			void *enum_arg));
+
+#define GETPH1_F_ESTABLISHED		0x0001
+
+extern struct ph1handle *getph1 __P((struct ph1handle *ph1hint,
+				     struct sockaddr *local,
+				     struct sockaddr *remote,
+				     int flags));
+
+#define getph1byaddr(local, remote, est) \
+	getph1(NULL, local, remote, est ? GETPH1_F_ESTABLISHED : 0)
+#define getph1bydstaddr(remote) \
+	getph1(NULL, NULL, remote, 0)
+
 #ifdef ENABLE_HYBRID
 struct ph1handle *getph1bylogin __P((char *));
 int purgeph1bylogin __P((char *));
 #endif
+extern void migrate_ph12 __P((struct ph1handle *old_iph1, struct ph1handle *new_iph1));
+extern void migrate_dying_ph12 __P((struct ph1handle *iph1));
 extern vchar_t *dumpph1 __P((void));
 extern struct ph1handle *newph1 __P((void));
 extern void delph1 __P((struct ph1handle *));
 extern int insph1 __P((struct ph1handle *));
 extern void remph1 __P((struct ph1handle *));
+extern int resolveph1rmconf __P((struct ph1handle *));
 extern void flushph1 __P((void));
 extern void initph1tree __P((void));
+extern int ph1_rekey_enabled __P((struct ph1handle *));
 
-extern struct ph2handle *getph2byspidx __P((struct policyindex *));
-extern struct ph2handle *getph2byspid __P((u_int32_t));
+extern int enumph2 __P((struct ph2selector *ph2sel,
+			int (* enum_func)(struct ph2handle *iph2, void *arg),
+			void *enum_arg));
 extern struct ph2handle *getph2byseq __P((u_int32_t));
 extern struct ph2handle *getph2bysaddr __P((struct sockaddr *,
 	struct sockaddr *));
@@ -466,6 +520,7 @@ extern void unbindph12 __P((struct ph2handle *));
 
 extern struct contacted *getcontacted __P((struct sockaddr *));
 extern int inscontacted __P((struct sockaddr *));
+extern void remcontacted __P((struct sockaddr *));
 extern void initctdtree __P((void));
 
 extern int check_recvdpkt __P((struct sockaddr *,

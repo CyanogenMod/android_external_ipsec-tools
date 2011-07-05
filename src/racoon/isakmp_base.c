@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp_base.c,v 1.7 2006/10/02 21:51:33 manu Exp $	*/
+/*	$NetBSD: isakmp_base.c,v 1.12 2009/03/12 10:57:26 tteras Exp $	*/
 
 /*	$KAME: isakmp_base.c,v 1.49 2003/11/13 02:30:20 sakane Exp $	*/
 
@@ -143,7 +143,8 @@ base_i1send(iph1, msg)
 		goto end;
 
 	/* create SA payload for my proposal */
-	iph1->sa = ipsecdoi_setph1proposal(iph1->rmconf->proposal);
+	iph1->sa = ipsecdoi_setph1proposal(iph1->rmconf,
+					   iph1->rmconf->proposal);
 	if (iph1->sa == NULL)
 		goto end;
 
@@ -154,8 +155,8 @@ base_i1send(iph1, msg)
 
 #ifdef ENABLE_HYBRID
         /* Do we need Xauth VID? */
-        switch (RMAUTHMETHOD(iph1)) {
-        case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
+        switch (iph1->rmconf->proposal->authmethod) {
+        case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
         case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I:
         case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I:
         case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I:
@@ -250,8 +251,7 @@ base_i1send(iph1, msg)
 #endif
 
 	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = iph1->rmconf->retry_counter;
-	if (isakmp_ph1resend(iph1) == -1)
+	if (isakmp_ph1send(iph1) == -1)
 		goto end;
 
 	iph1->status = PHASE1ST_MSG1SENT;
@@ -297,7 +297,6 @@ base_i2recv(iph1, msg)
 	struct isakmp_parse_t *pa;
 	vchar_t *satmp = NULL;
 	int error = -1;
-	int vid_numeric;
 #ifdef ENABLE_HYBRID
 	vchar_t *unity_vid;
 	vchar_t *xauth_vid;
@@ -342,34 +341,7 @@ base_i2recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal && natt_vendorid(vid_numeric))
-			  natt_handle_vendorid(iph1, vid_numeric);
-#endif
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-
-			default:
-				break;
-			}
-#endif
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd) {
-				iph1->dpd_support=1;
-				plog(LLV_DEBUG, LOCATION, NULL,
-					 "remote supports DPD\n");
-			}
-#endif
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		default:
 			/* don't send information, see ident_r1recv() */
@@ -462,7 +434,7 @@ base_i2send(iph1, msg)
 		goto end;
 
 	/* generate SKEYID to compute hash if not signature mode */
-	switch (AUTHMETHOD(iph1)) {
+	switch (iph1->approval->authmethod) {
 	case OAKLEY_ATTR_AUTH_METHOD_RSASIG:
 	case OAKLEY_ATTR_AUTH_METHOD_DSSSIG:
 #ifdef ENABLE_HYBRID
@@ -484,10 +456,10 @@ base_i2send(iph1, msg)
 	iph1->hash = oakley_ph1hash_base_i(iph1, GENERATE);
 	if (iph1->hash == NULL)
 		goto end;
-	switch (AUTHMETHOD(iph1)) {
+	switch (iph1->approval->authmethod) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 #ifdef ENABLE_HYBRID
-	case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
 	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I:
 	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I:
 #endif
@@ -521,16 +493,16 @@ base_i2send(iph1, msg)
 			need_cert = 1;
 
 		/* create isakmp KE payload */
-		plist = isakmp_plist_append(plist, 
-		    iph1->dhpub, ISAKMP_NPTYPE_KE);
+		plist = isakmp_plist_append(plist, iph1->dhpub,
+					    ISAKMP_NPTYPE_KE);
 
 		/* add CERT payload if there */
 		if (need_cert)
-			plist = isakmp_plist_append(plist, 
-			    iph1->cert->pl, ISAKMP_NPTYPE_CERT);
+			plist = isakmp_plist_append(plist,  iph1->cert,
+						    ISAKMP_NPTYPE_CERT);
 
 		/* add SIG payload */
-		plist = isakmp_plist_append(plist, 
+		plist = isakmp_plist_append(plist,
 		    iph1->sig, ISAKMP_NPTYPE_SIG);
 
 		break;
@@ -579,8 +551,7 @@ base_i2send(iph1, msg)
 #endif
 
 	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = iph1->rmconf->retry_counter;
-	if (isakmp_ph1resend(iph1) == -1)
+	if (isakmp_ph1send(iph1) == -1)
 		goto end;
 
 	/* the sending message is added to the received-list. */
@@ -614,8 +585,7 @@ base_i3recv(iph1, msg)
 {
 	vchar_t *pbuf = NULL;
 	struct isakmp_parse_t *pa;
-	int error = -1;
-	int ptype;
+	int error = -1, ptype;
 #ifdef ENABLE_NATT
 	vchar_t	*natd_received;
 	int natd_seq = 0, natd_verified;
@@ -654,7 +624,7 @@ base_i3recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 
 #ifdef ENABLE_NATT
@@ -716,8 +686,7 @@ base_i3recv(iph1, msg)
 			/* message printed inner oakley_validate_auth() */
 			goto end;
 		}
-		EVT_PUSH(iph1->local, iph1->remote, 
-		    EVTT_PEERPH1AUTH_FAILED, NULL);
+		evt_phase1(iph1, EVT_PHASE1_AUTH_FAILED, NULL);
 		isakmp_info_send_n1(iph1, ptype, NULL);
 		goto end;
 	}
@@ -728,7 +697,7 @@ base_i3recv(iph1, msg)
 		goto end;
 
 	/* generate SKEYID to compute hash if signature mode */
-	switch (AUTHMETHOD(iph1)) {
+	switch (iph1->approval->authmethod) {
 	case OAKLEY_ATTR_AUTH_METHOD_RSASIG:
 	case OAKLEY_ATTR_AUTH_METHOD_DSSSIG:
 #ifdef ENABLE_HYBRID
@@ -769,10 +738,8 @@ end:
 
 	if (error) {
 		VPTRINIT(iph1->dhpub_p);
-		oakley_delcert(iph1->cert_p);
-		iph1->cert_p = NULL;
-		oakley_delcert(iph1->crl_p);
-		iph1->crl_p = NULL;
+		VPTRINIT(iph1->cert_p);
+		VPTRINIT(iph1->crl_p);
 		VPTRINIT(iph1->sig_p);
 	}
 
@@ -829,9 +796,6 @@ base_r1recv(iph1, msg)
 	}
 
 	/* validate the type of next payload */
-	/*
-	 * NOTE: XXX even if multiple VID, we'll silently ignore those.
-	 */
 	pbuf = isakmp_parse(msg);
 	if (pbuf == NULL)
 		goto end;
@@ -863,39 +827,12 @@ base_r1recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal && natt_vendorid(vid_numeric))
-				natt_handle_vendorid(iph1, vid_numeric);
-#endif
+			vid_numeric = handle_vendorid(iph1, pa->ptr);
 #ifdef ENABLE_FRAG
 			if ((vid_numeric == VENDORID_FRAG) &&
 			    (vendorid_frag_cap(pa->ptr) & VENDORID_FRAG_BASE))
 				iph1->frag = 1;
 #endif
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-
-			default:
-				break;
-			}
-#endif
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd) {
-				iph1->dpd_support=1;
-				plog(LLV_DEBUG, LOCATION, NULL,
-					 "remote supports DPD\n");
-			}
-#endif 
 			break;
 		default:
 			/* don't send information, see ident_r1recv() */
@@ -1073,8 +1010,7 @@ base_r1send(iph1, msg)
 #endif
 
 	/* send the packet, add to the schedule to resend */
-	iph1->retry_counter = iph1->rmconf->retry_counter;
-	if (isakmp_ph1resend(iph1) == -1) {
+	if (isakmp_ph1send(iph1) == -1) {
 		iph1 = NULL;
 		goto end;
 	}
@@ -1130,8 +1066,7 @@ base_r2recv(iph1, msg)
 {
 	vchar_t *pbuf = NULL;
 	struct isakmp_parse_t *pa;
-	int error = -1;
-	int ptype;
+	int error = -1, ptype;
 #ifdef ENABLE_NATT
 	int natd_seq = 0;
 #endif
@@ -1171,7 +1106,7 @@ base_r2recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 
 #ifdef ENABLE_NATT
@@ -1242,8 +1177,7 @@ base_r2recv(iph1, msg)
 			/* message printed inner oakley_validate_auth() */
 			goto end;
 		}
-		EVT_PUSH(iph1->local, iph1->remote, 
-		    EVTT_PEERPH1AUTH_FAILED, NULL);
+		evt_phase1(iph1, EVT_PHASE1_AUTH_FAILED, NULL);
 		isakmp_info_send_n1(iph1, ptype, NULL);
 		goto end;
 	}
@@ -1258,10 +1192,8 @@ end:
 
 	if (error) {
 		VPTRINIT(iph1->dhpub_p);
-		oakley_delcert(iph1->cert_p);
-		iph1->cert_p = NULL;
-		oakley_delcert(iph1->crl_p);
-		iph1->crl_p = NULL;
+		VPTRINIT(iph1->cert_p);
+		VPTRINIT(iph1->crl_p);
 		VPTRINIT(iph1->sig_p);
 	}
 
@@ -1294,7 +1226,7 @@ base_r2send(iph1, msg)
 
 	/* generate HASH to send */
 	plog(LLV_DEBUG, LOCATION, NULL, "generate HASH_I\n");
-	switch (AUTHMETHOD(iph1)) {
+	switch (iph1->approval->authmethod) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 #ifdef ENABLE_HYBRID
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
@@ -1329,7 +1261,7 @@ base_r2send(iph1, msg)
 	if (iph1->hash == NULL)
 		goto end;
 
-	switch (AUTHMETHOD(iph1)) {
+	switch (iph1->approval->authmethod) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 #ifdef ENABLE_HYBRID
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
@@ -1369,16 +1301,17 @@ base_r2send(iph1, msg)
 			need_cert = 1;
 
 		/* create isakmp KE payload */
-		plist = isakmp_plist_append(plist, 
-		    iph1->dhpub, ISAKMP_NPTYPE_KE);
+		plist = isakmp_plist_append(plist, iph1->dhpub,
+					    ISAKMP_NPTYPE_KE);
 
 		/* add CERT payload if there */
 		if (need_cert)
-			plist = isakmp_plist_append(plist, 
-			    iph1->cert->pl, ISAKMP_NPTYPE_CERT);
+			plist = isakmp_plist_append(plist, iph1->cert,
+						    ISAKMP_NPTYPE_CERT);
+
 		/* add SIG payload */
-		plist = isakmp_plist_append(plist, 
-		    iph1->sig, ISAKMP_NPTYPE_SIG);
+		plist = isakmp_plist_append(plist, iph1->sig,
+					    ISAKMP_NPTYPE_SIG);
 		break;
 #ifdef HAVE_GSSAPI
 	case OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB:

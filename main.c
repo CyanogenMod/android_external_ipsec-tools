@@ -16,56 +16,40 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdarg.h>
 #include <signal.h>
+#include <poll.h>
+
+#ifdef ANDROID_CHANGES
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/select.h>
-
-#ifdef ANDROID_CHANGES
-#include <sys/ioctl.h>
-#include <linux/if.h>
 #include <android/log.h>
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
-#include "keystore_get.h"
 #endif
 
 #include "config.h"
-#include "libpfkey.h"
 #include "gcmalloc.h"
-#include "vmbuf.h"
-#include "crypto_openssl.h"
-#include "oakley.h"
-#include "pfkey.h"
+#include "session.h"
 #include "schedule.h"
-#include "isakmp_var.h"
-#include "nattraversal.h"
-#include "localconf.h"
-#include "sockmisc.h"
-#include "grabmyaddr.h"
 #include "plog.h"
-#include "admin.h"
-#include "privsep.h"
-#include "misc.h"
 
 #ifdef ANDROID_CHANGES
 
-static int get_control_and_arguments(int *argc, char ***argv)
+static void android_get_arguments(int *argc, char ***argv)
 {
     static char *args[32];
     int control;
     int i;
 
     if ((i = android_get_control_socket("racoon")) == -1) {
-        return -1;
+        return;
     }
     do_plog(LLV_DEBUG, "Waiting for control socket");
     if (listen(i, 1) == -1 || (control = accept(i, NULL, 0)) == -1) {
         do_plog(LLV_ERROR, "Cannot get control socket");
-        exit(-1);
+        exit(1);
     }
     close(i);
 
@@ -75,7 +59,7 @@ static int get_control_and_arguments(int *argc, char ***argv)
         if (recv(control, &bytes[0], 1, 0) != 1
             || recv(control, &bytes[1], 1, 0) != 1) {
             do_plog(LLV_ERROR, "Cannot get argument length");
-            exit(-1);
+            exit(1);
         } else {
             int length = bytes[0] << 8 | bytes[1];
             int offset = 0;
@@ -90,7 +74,7 @@ static int get_control_and_arguments(int *argc, char ***argv)
                     offset += n;
                 } else {
                     do_plog(LLV_ERROR, "Cannot get argument value");
-                    exit(-1);
+                    exit(1);
                 }
             }
             args[i][length] = 0;
@@ -100,38 +84,19 @@ static int get_control_and_arguments(int *argc, char ***argv)
 
     *argc = i;
     *argv = args;
-    return control;
-}
-
-static void bind_interface()
-{
-    struct ifreq ifreqs[64];
-    struct ifconf ifconf = {.ifc_len = sizeof(ifreqs), .ifc_req = ifreqs};
-    struct myaddrs *p = lcconf->myaddrs;
-
-    if (ioctl(p->sock, SIOCGIFCONF, &ifconf) == -1) {
-        do_plog(LLV_WARNING, "Cannot list interfaces");
-        return;
-    }
-
-    while (p) {
-        int i = ifconf.ifc_len / sizeof(struct ifreq) - 1;
-        while (i >= 0 && cmpsaddrwop(p->addr, &ifreqs[i].ifr_addr)) {
-            --i;
-        }
-        if (i < 0 || setsockopt(p->sock, SOL_SOCKET, SO_BINDTODEVICE,
-                                ifreqs[i].ifr_name, IFNAMSIZ) == -1) {
-            do_plog(LLV_WARNING, "Cannot bind socket %d to proper interface",
-                    p->sock);
-        }
-        p = p->next;
-    }
+    close(control);
 }
 
 #endif
 
 extern void setup(int argc, char **argv);
-int f_local = 0;
+
+static int monitor_count;
+static struct {
+    int (*callback)(void *ctx, int fd);
+    void *ctx;
+} monitors[10];
+static struct pollfd pollfds[10];
 
 static void terminate(int signal)
 {
@@ -145,67 +110,58 @@ static void terminated()
 
 int main(int argc, char **argv)
 {
-    fd_set fdset;
-    int fdset_size;
-    struct myaddrs *p;
-#ifdef ANDROID_CHANGES
-    int control = get_control_and_arguments(&argc, &argv);
-#endif
+    do_plog(LLV_INFO, "ipsec-tools 0.8.0 (http://ipsec-tools.sf.net)\n");
 
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
     signal(SIGPIPE, SIG_IGN);
-    setup(argc, argv);
-
-    do_plog(LLV_INFO, "ipsec-tools 0.7.3 (http://ipsec-tools.sf.net)\n");
     atexit(terminated);
 
-    eay_init();
-    oakley_dhinit();
-    compute_vendorids();
-    sched_init();
-
-    if (pfkey_init() < 0 || isakmp_init() < 0) {
-        exit(1);
-    }
-
-#ifdef ENABLE_NATT
-    natt_keepalive_init();
-#endif
-
 #ifdef ANDROID_CHANGES
-    bind_interface();
-    setuid(AID_VPN);
+/*    setuid(AID_VPN); */
+    android_get_arguments(&argc, &argv);
 #endif
-
-    FD_ZERO(&fdset);
-    FD_SET(lcconf->sock_pfkey, &fdset);
-    fdset_size = lcconf->sock_pfkey;
-    for (p = lcconf->myaddrs; p; p = p->next) {
-        FD_SET(p->sock, &fdset);
-        if (fdset_size < p->sock) {
-            fdset_size = p->sock;
-        }
-    }
-    ++fdset_size;
+    setup(argc, argv);
 
     while (1) {
-        fd_set readset = fdset;
-        struct timeval *timeout = schedular();
-        if (select(fdset_size, &readset, NULL, NULL, timeout) < 0) {
-            exit(1);
-        }
-        if (FD_ISSET(lcconf->sock_pfkey, &readset)) {
-            pfkey_handler();
-        }
-        for (p = lcconf->myaddrs; p; p = p->next) {
-            if (FD_ISSET(p->sock, &readset)) {
-                isakmp_handler(p->sock);
+        struct timeval *tv = schedular();
+        int timeout = tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1;
+
+        if (poll(pollfds, monitor_count, timeout) > 0) {
+            int i;
+            for (i = 0; i < monitor_count; ++i) {
+                if (pollfds[i].revents & POLLHUP) {
+                    do_plog(LLV_ERROR, "fd %d is closed\n", pollfds[i].fd);
+                    exit(1);
+                }
+                if (pollfds[i].revents & POLLIN) {
+                    monitors[i].callback(monitors[i].ctx, pollfds[i].fd);
+                }
             }
         }
     }
     return 0;
+}
+
+/* session.h */
+
+void monitor_fd(int fd, int (*callback)(void *, int), void *ctx, int priority)
+{
+    if (fd < 0 || monitor_count == 10) {
+        do_plog(LLV_ERROR, "Cannot monitor fd");
+        exit(1);
+    }
+    monitors[monitor_count].callback = callback;
+    monitors[monitor_count].ctx = ctx;
+    pollfds[monitor_count].fd = fd;
+    pollfds[monitor_count].events = POLLIN;
+    ++monitor_count;
+}
+
+void unmonitor_fd(int fd)
+{
+    exit(1);
 }
 
 /* plog.h */
@@ -244,55 +200,4 @@ char *binsanitize(char *data, size_t length)
         output[length] = '\0';
     }
     return output;
-}
-
-/* privsep.h */
-
-int privsep_pfkey_open()
-{
-    return pfkey_open();
-}
-
-void privsep_pfkey_close(int key)
-{
-    pfkey_close(key);
-}
-
-vchar_t *privsep_eay_get_pkcs1privkey(char *file)
-{
-    return eay_get_pkcs1privkey(file);
-}
-
-vchar_t *privsep_getpsk(const char *key, int size)
-{
-    vchar_t *p = NULL;
-    if (key && (p = vmalloc(size)) != NULL) {
-        memcpy(p->v, key, p->l);
-    }
-    return p;
-}
-
-int privsep_script_exec(char *script, int name, char * const *environ)
-{
-    return 0;
-}
-
-/* grabmyaddr.h */
-
-int getsockmyaddr(struct sockaddr *addr)
-{
-    struct myaddrs *p;
-    for (p = lcconf->myaddrs; p; p = p->next) {
-        if (cmpsaddrstrict(addr, p->addr) == 0) {
-            return p->sock;
-        }
-    }
-    return -1;
-}
-
-/* misc.h */
-
-int racoon_hexdump(void *data, size_t length)
-{
-    return 0;
 }

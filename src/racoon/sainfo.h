@@ -1,4 +1,4 @@
-/*	$NetBSD: sainfo.h,v 1.5 2006/10/03 08:01:56 vanhu Exp $	*/
+/*	$NetBSD: sainfo.h,v 1.8 2011/02/02 15:21:34 vanhu Exp $	*/
 
 /* Id: sainfo.h,v 1.5 2006/07/09 17:19:38 manubsd Exp */
 
@@ -36,6 +36,9 @@
 
 #include <sys/queue.h>
 
+#define SAINFO_ANONYMOUS	((void *)NULL)
+#define	SAINFO_CLIENTADDR	((void *)~0)
+
 /* SA info */
 struct sainfo {
 	vchar_t *idsrc;
@@ -44,6 +47,7 @@ struct sainfo {
 		 * idsrc and iddst are constructed body of ID payload.
 		 * that is (struct ipsecdoi_id_b) + ID value.
 		 * If idsrc == NULL, that is anonymous entry.
+		 * If idsrc == ~0, that is client address entry.
 		 */
 
 #ifdef ENABLE_HYBRID
@@ -56,7 +60,7 @@ struct sainfo {
 	vchar_t *id_i;		/* identifier of the authorized initiator */
 	struct sainfoalg *algs[MAXALGCLASS];
 
-	int remoteid;
+	uint32_t remoteid;
 
 	LIST_ENTRY(sainfo) chain;
 };
@@ -69,7 +73,7 @@ struct sainfoalg {
 };
 
 extern struct sainfo *getsainfo __P((const vchar_t *,
-	const vchar_t *, const vchar_t *, int));
+	const vchar_t *, const vchar_t *, const vchar_t *, uint32_t));
 extern struct sainfo *newsainfo __P((void));
 extern void delsainfo __P((struct sainfo *));
 extern void inssainfo __P((struct sainfo *));
@@ -81,8 +85,8 @@ extern void delsainfoalg __P((struct sainfoalg *));
 extern void inssainfoalg __P((struct sainfoalg **, struct sainfoalg *));
 extern const char * sainfo2str __P((const struct sainfo *));
 
-extern void save_sainfotree __P((void));
-extern void save_sainfotree_flush __P((void));
+extern void sainfo_start_reload __P((void));
+extern void sainfo_finish_reload __P((void));
 extern void save_sainfotree_restore __P((void));
 
 #endif /* _SAINFO_H */

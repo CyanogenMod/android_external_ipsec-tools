@@ -21,4 +21,6 @@
 #define HAVE_SYS_TIME_H 1
 #define HAVE_UNISTD_H
 
+#define RETSIGTYPE void
+
 #define ANDROID_PATCHED

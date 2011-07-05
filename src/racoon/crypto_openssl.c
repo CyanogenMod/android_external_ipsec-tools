@@ -1,4 +1,4 @@
-/*	$NetBSD: crypto_openssl.c,v 1.11.6.6 2009/04/29 10:50:25 tteras Exp $	*/
+/*	$NetBSD: crypto_openssl.c,v 1.20 2010/10/20 13:40:02 tteras Exp $	*/
 
 /* Id: crypto_openssl.c,v 1.47 2006/05/06 20:42:09 manubsd Exp */
 
@@ -113,6 +113,7 @@ typedef STACK_OF(GENERAL_NAME) GENERAL_NAMES;
 #include "crypto_openssl.h"
 #include "debug.h"
 #include "gcmalloc.h"
+#include "isakmp.h"
 
 /*
  * I hate to cast every parameter to des_xx into void *, but it is
@@ -136,9 +137,9 @@ eay_str2asn1dn(str, len)
 	int len;
 {
 	X509_NAME *name;
-	char *buf;
+	char *buf, *dst;
 	char *field, *value;
-	int i, j;
+	int i;
 	vchar_t *ret = NULL;
 	caddr_t p;
 
@@ -154,15 +155,38 @@ eay_str2asn1dn(str, len)
 
 	name = X509_NAME_new();
 
-	field = &buf[0];
+	dst = field = &buf[0];
 	value = NULL;
 	for (i = 0; i < len; i++) {
+		if (buf[i] == '\\') {
+			/* Escape characters specified in RFC 2253 */
+			if (i < len - 1 &&
+			    strchr("\\,=+<>#;", buf[i+1]) != NULL) {
+				*dst++ = buf[++i];
+				continue;
+			} else if (i < len - 2) {
+				/* RFC 2253 hexpair character escape */
+				long u;
+				char esc_str[3];
+				char *endptr;
+
+				esc_str[0] = buf[++i];
+				esc_str[1] = buf[++i];
+				esc_str[2] = '\0';
+				u = strtol(esc_str, &endptr, 16);
+				if (*endptr != '\0' || u < 0 || u > 255)
+					goto err;
+				*dst++ = u;
+				continue;
+			} else
+				goto err;
+		}
 		if (!value && buf[i] == '=') {
-			buf[i] = '\0';
-			value = &buf[i + 1];
+			*dst = '\0';
+			dst = value = &buf[i + 1];
 			continue;
 		} else if (buf[i] == ',' || buf[i] == '/') {
-			buf[i] = '\0';
+			*dst = '\0';
 
 			plog(LLV_DEBUG, LOCATION, NULL, "DN: %s=%s\n",
 			     field, value);
@@ -179,16 +203,16 @@ eay_str2asn1dn(str, len)
 				     "%s\n", eay_strerror());
 				goto err;
 			}
-			for (j = i + 1; j < len; j++) {
-				if (buf[j] != ' ')
-					break;
-			}
-			field = &buf[j];
+
+			while (i + 1 < len && buf[i + 1] == ' ') i++;
+			dst = field = &buf[i + 1];
 			value = NULL;
 			continue;
+		} else {
+			*dst++  = buf[i];
 		}
 	}
-	buf[len] = '\0';
+	*dst = '\0';
 
 	plog(LLV_DEBUG, LOCATION, NULL, "DN: %s=%s\n",
 	     field, value);
@@ -638,7 +662,7 @@ cb_check_cert_remote(ok, ctx)
 }
 
 /*
- * get a subjectAltName from X509 certificate.
+ * get a subjectName from X509 certificate.
  */
 vchar_t *
 eay_get_x509asn1subjectname(cert)
@@ -648,8 +672,6 @@ eay_get_x509asn1subjectname(cert)
 	u_char *bp;
 	vchar_t *name = NULL;
 	int len;
-
-	bp = (unsigned char *) cert->v;
 
 	x509 = mem2x509(cert);
 	if (x509 == NULL)
@@ -784,6 +806,46 @@ end:
 	return error;
 }
 
+/*
+ * get a issuerName from X509 certificate.
+ */
+vchar_t *
+eay_get_x509asn1issuername(cert)
+	vchar_t *cert;
+{
+	X509 *x509 = NULL;
+	u_char *bp;
+	vchar_t *name = NULL;
+	int len;
+
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
+		goto error;
+
+	/* get the length of the name */
+	len = i2d_X509_NAME(x509->cert_info->issuer, NULL);
+	name = vmalloc(len);
+	if (name == NULL)
+		goto error;
+
+	/* get the name */
+	bp = (unsigned char *) name->v;
+	len = i2d_X509_NAME(x509->cert_info->issuer, &bp);
+
+	X509_free(x509);
+
+	return name;
+
+error:
+	plog(LLV_ERROR, LOCATION, NULL, "%s\n", eay_strerror());
+
+	if (name != NULL)
+		vfree(name);
+	if (x509 != NULL)
+		X509_free(x509);
+
+	return NULL;
+}
 
 /*
  * decode a X509 certificate and make a readable text terminated '\n'.
@@ -850,9 +912,9 @@ mem2x509(cert)
     {
 	u_char *bp;
 
-	bp = (unsigned char *) cert->v;
+	bp = (unsigned char *) cert->v + 1;
 
-	x509 = d2i_X509(NULL, (void *)&bp, cert->l);
+	x509 = d2i_X509(NULL, (void *)&bp, cert->l - 1);
     }
 #else
     {
@@ -862,7 +924,7 @@ mem2x509(cert)
 	bio = BIO_new(BIO_s_mem());
 	if (bio == NULL)
 		return NULL;
-	len = BIO_write(bio, cert->v, cert->l);
+	len = BIO_write(bio, cert->v + 1, cert->l - 1);
 	if (len == -1)
 		return NULL;
 	x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
@@ -912,12 +974,13 @@ eay_get_x509cert(path)
 		return NULL;
 
 	len = i2d_X509(x509, NULL);
-	cert = vmalloc(len);
+	cert = vmalloc(len + 1);
 	if (cert == NULL) {
 		X509_free(x509);
 		return NULL;
 	}
-	bp = (unsigned char *) cert->v;
+	cert->v[0] = ISAKMP_CERT_X509SIGN;
+	bp = (unsigned char *) &cert->v[1];
 	error = i2d_X509(x509, &bp);
 	X509_free(x509);
 
@@ -943,17 +1006,12 @@ eay_check_x509sign(source, sig, cert)
 	vchar_t *cert;
 {
 	X509 *x509;
-	u_char *bp;
 	EVP_PKEY *evp;
 	int res;
 
-	bp = (unsigned char *) cert->v;
-
-	x509 = d2i_X509(NULL, (void *)&bp, cert->l);
-	if (x509 == NULL) {
-		plog(LLV_ERROR, LOCATION, NULL, "d2i_X509(): %s\n", eay_strerror());
+	x509 = mem2x509(cert);
+	if (x509 == NULL)
 		return -1;
-	}
 
 	evp = X509_get_pubkey(x509);
 	if (! evp) {
@@ -1807,6 +1865,42 @@ eay_hmac_init(key, md)
 	return (caddr_t)c;
 }
 
+static vchar_t *eay_hmac_one(key, data, type)
+	vchar_t *key, *data;
+	const EVP_MD *type;
+{
+	vchar_t *res;
+
+	if ((res = vmalloc(EVP_MD_size(type))) == 0)
+		return NULL;
+
+	if (!HMAC(type, (void *) key->v, key->l,
+		  (void *) data->v, data->l, (void *) res->v, NULL)) {
+		vfree(res);
+		return NULL;
+	}
+
+	return res;
+}
+
+static vchar_t *eay_digest_one(data, type)
+	vchar_t *data;
+	const EVP_MD *type;
+{
+	vchar_t *res;
+
+	if ((res = vmalloc(EVP_MD_size(type))) == 0)
+		return NULL;
+
+	if (!EVP_Digest((void *) data->v, data->l,
+			(void *) res->v, NULL, type, NULL)) {
+		vfree(res);
+		return NULL;
+	}
+
+	return res;
+}
+
 #ifdef WITH_SHA2
 /*
  * HMAC SHA2-512
@@ -1815,14 +1909,7 @@ vchar_t *
 eay_hmacsha2_512_one(key, data)
 	vchar_t *key, *data;
 {
-	vchar_t *res;
-	caddr_t ctx;
-
-	ctx = eay_hmacsha2_512_init(key);
-	eay_hmacsha2_512_update(ctx, data);
-	res = eay_hmacsha2_512_final(ctx);
-
-	return(res);
+	return eay_hmac_one(key, data, EVP_sha2_512());
 }
 
 caddr_t
@@ -1872,14 +1959,7 @@ vchar_t *
 eay_hmacsha2_384_one(key, data)
 	vchar_t *key, *data;
 {
-	vchar_t *res;
-	caddr_t ctx;
-
-	ctx = eay_hmacsha2_384_init(key);
-	eay_hmacsha2_384_update(ctx, data);
-	res = eay_hmacsha2_384_final(ctx);
-
-	return(res);
+	return eay_hmac_one(key, data, EVP_sha2_384());
 }
 
 caddr_t
@@ -1929,14 +2009,7 @@ vchar_t *
 eay_hmacsha2_256_one(key, data)
 	vchar_t *key, *data;
 {
-	vchar_t *res;
-	caddr_t ctx;
-
-	ctx = eay_hmacsha2_256_init(key);
-	eay_hmacsha2_256_update(ctx, data);
-	res = eay_hmacsha2_256_final(ctx);
-
-	return(res);
+	return eay_hmac_one(key, data, EVP_sha2_256());
 }
 
 caddr_t
@@ -1987,14 +2060,7 @@ vchar_t *
 eay_hmacsha1_one(key, data)
 	vchar_t *key, *data;
 {
-	vchar_t *res;
-	caddr_t ctx;
-
-	ctx = eay_hmacsha1_init(key);
-	eay_hmacsha1_update(ctx, data);
-	res = eay_hmacsha1_final(ctx);
-
-	return(res);
+	return eay_hmac_one(key, data, EVP_sha1());
 }
 
 caddr_t
@@ -2044,14 +2110,7 @@ vchar_t *
 eay_hmacmd5_one(key, data)
 	vchar_t *key, *data;
 {
-	vchar_t *res;
-	caddr_t ctx;
-
-	ctx = eay_hmacmd5_init(key);
-	eay_hmacmd5_update(ctx, data);
-	res = eay_hmacmd5_final(ctx);
-
-	return(res);
+	return eay_hmac_one(key, data, EVP_md5());
 }
 
 caddr_t
@@ -2137,14 +2196,7 @@ vchar_t *
 eay_sha2_512_one(data)
 	vchar_t *data;
 {
-	caddr_t ctx;
-	vchar_t *res;
-
-	ctx = eay_sha2_512_init();
-	eay_sha2_512_update(ctx, data);
-	res = eay_sha2_512_final(ctx);
-
-	return(res);
+	return eay_digest_one(data, EVP_sha512());
 }
 
 int
@@ -2197,14 +2249,7 @@ vchar_t *
 eay_sha2_384_one(data)
 	vchar_t *data;
 {
-	caddr_t ctx;
-	vchar_t *res;
-
-	ctx = eay_sha2_384_init();
-	eay_sha2_384_update(ctx, data);
-	res = eay_sha2_384_final(ctx);
-
-	return(res);
+	return eay_digest_one(data, EVP_sha2_384());
 }
 
 int
@@ -2257,14 +2302,7 @@ vchar_t *
 eay_sha2_256_one(data)
 	vchar_t *data;
 {
-	caddr_t ctx;
-	vchar_t *res;
-
-	ctx = eay_sha2_256_init();
-	eay_sha2_256_update(ctx, data);
-	res = eay_sha2_256_final(ctx);
-
-	return(res);
+	return eay_digest_one(data, EVP_sha2_256());
 }
 
 int
@@ -2316,14 +2354,7 @@ vchar_t *
 eay_sha1_one(data)
 	vchar_t *data;
 {
-	caddr_t ctx;
-	vchar_t *res;
-
-	ctx = eay_sha1_init();
-	eay_sha1_update(ctx, data);
-	res = eay_sha1_final(ctx);
-
-	return(res);
+	return eay_digest_one(data, EVP_sha1());
 }
 
 int
@@ -2374,14 +2405,7 @@ vchar_t *
 eay_md5_one(data)
 	vchar_t *data;
 {
-	caddr_t ctx;
-	vchar_t *res;
-
-	ctx = eay_md5_init();
-	eay_md5_update(ctx, data);
-	res = eay_md5_final(ctx);
-
-	return(res);
+	return eay_digest_one(data, EVP_md5());
 }
 
 int

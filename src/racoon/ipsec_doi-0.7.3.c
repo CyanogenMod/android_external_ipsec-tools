@@ -1,11 +1,11 @@
-/*	$NetBSD: ipsec_doi.c,v 1.46 2010/12/14 17:57:31 tteras Exp $	*/
+/*	$NetBSD: ipsec_doi.c,v 1.23.4.10 2009/06/19 07:32:52 tteras Exp $	*/
 
 /* Id: ipsec_doi.c,v 1.55 2006/08/17 09:20:41 vanhu Exp */
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- *
+ * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -17,7 +17,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- *
+ * 
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -83,6 +83,9 @@
 #ifdef ENABLE_NATT
 #include "nattraversal.h"
 #endif
+#ifdef ENABLE_HYBRID
+static int switch_authmethod(int);
+#endif
 
 #ifdef HAVE_GSSAPI
 #include <iconv.h>
@@ -94,19 +97,19 @@
 #endif
 #endif
 
-static vchar_t *get_ph1approval __P((struct ph1handle *, u_int32_t, u_int32_t,
-				     struct prop_pair **));
-static int get_ph1approvalx __P((struct remoteconf *, void *));
+int verbose_proposal_check = 1;
 
-static int t2isakmpsa __P((struct isakmp_pl_t *, struct isakmpsa *, u_int32_t));
+static vchar_t *get_ph1approval __P((struct ph1handle *, struct prop_pair **));
+static struct isakmpsa *get_ph1approvalx __P((struct prop_pair *,
+	struct isakmpsa *, struct isakmpsa *, int));
+static void print_ph1mismatched __P((struct prop_pair *, struct isakmpsa *));
+static int t2isakmpsa __P((struct isakmp_pl_t *, struct isakmpsa *));
 static int cmp_aproppair_i __P((struct prop_pair *, struct prop_pair *));
 static struct prop_pair *get_ph2approval __P((struct ph2handle *,
 	struct prop_pair **));
 static struct prop_pair *get_ph2approvalx __P((struct ph2handle *,
 	struct prop_pair *));
 static void free_proppair0 __P((struct prop_pair *));
-static struct prop_pair ** get_proppair_and_doi_sit __P((vchar_t *, int,
-							 u_int32_t *, u_int32_t *));
 
 static int get_transform
 	__P((struct isakmp_pl_p *, struct prop_pair **, int *));
@@ -155,10 +158,12 @@ static int setph1attr __P((struct isakmpsa *, caddr_t));
 static vchar_t *setph2proposal0 __P((const struct ph2handle *,
 	const struct saprop *, const struct saproto *));
 
-struct ph1approvalx_ctx {
-	struct prop_pair *p;
-	struct isakmpsa *sa;
-};
+static vchar_t *getidval __P((int, vchar_t *));
+
+#ifdef HAVE_GSSAPI
+static struct isakmpsa *fixup_initiator_sa __P((struct isakmpsa *,
+	struct isakmpsa *));
+#endif
 
 /*%%%*/
 /*
@@ -177,81 +182,39 @@ ipsecdoi_checkph1proposal(sa, iph1)
 {
 	vchar_t *newsa;		/* new SA payload approved. */
 	struct prop_pair **pair;
-	u_int32_t doitype, sittype;
 
 	/* get proposal pair */
-	pair = get_proppair_and_doi_sit(sa, IPSECDOI_TYPE_PH1,
-					&doitype, &sittype);
+	pair = get_proppair(sa, IPSECDOI_TYPE_PH1);
 	if (pair == NULL)
 		return -1;
 
 	/* check and get one SA for use */
-	newsa = get_ph1approval(iph1, doitype, sittype, pair);
+	newsa = get_ph1approval(iph1, pair);
+	
 	free_proppair(pair);
 
 	if (newsa == NULL)
 		return -1;
 
 	iph1->sa_ret = newsa;
+
 	return 0;
 }
-
-static void
-print_ph1proposal(pair, s)
-	struct prop_pair *pair;
-	struct isakmpsa *s;
-{
-	struct isakmp_pl_p *prop = pair->prop;
-	struct isakmp_pl_t *trns = pair->trns;
-
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "prop#=%d, prot-id=%s, spi-size=%d, #trns=%d\n",
-	     prop->p_no, s_ipsecdoi_proto(prop->proto_id),
-	     prop->spi_size, prop->num_t);
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "trns#=%d, trns-id=%s\n",
-	     trns->t_no, s_ipsecdoi_trns(prop->proto_id, trns->t_id));
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  lifetime = %ld\n", (long) s->lifetime);
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  lifebyte = %zu\n", s->lifebyte);
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  enctype = %s\n",
-	     s_oakley_attr_v(OAKLEY_ATTR_ENC_ALG, s->enctype));
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  encklen = %d\n", s->encklen);
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  hashtype = %s\n",
-	     s_oakley_attr_v(OAKLEY_ATTR_HASH_ALG, s->hashtype));
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  authmethod = %s\n",
-	     s_oakley_attr_v(OAKLEY_ATTR_AUTH_METHOD, s->authmethod));
-	plog(LLV_DEBUG, LOCATION, NULL,
-	     "  dh_group = %s\n",
-	     s_oakley_attr_v(OAKLEY_ATTR_GRP_DESC, s->dh_group));
-}
-
 
 /*
  * acceptable check for remote configuration.
  * return a new SA payload to be reply to peer.
  */
-
 static vchar_t *
-get_ph1approval(iph1, doitype, sittype, pair)
+get_ph1approval(iph1, pair)
 	struct ph1handle *iph1;
-	u_int32_t doitype, sittype;
 	struct prop_pair **pair;
 {
 	vchar_t *newsa;
-	struct ph1approvalx_ctx ctx;
+	struct isakmpsa *sa, tsa;
 	struct prop_pair *s, *p;
-	struct rmconfselector rmsel;
-	struct isakmpsa *sa;
+	int prophlen;
 	int i;
-
-	memset(&rmsel, 0, sizeof(rmsel));
-	rmsel.remote = iph1->remote;
 
 	if (iph1->approval) {
 		delisakmpsa(iph1->approval);
@@ -262,35 +225,42 @@ get_ph1approval(iph1, doitype, sittype, pair)
 		if (pair[i] == NULL)
 			continue;
 		for (s = pair[i]; s; s = s->next) {
+			prophlen = 
+			    sizeof(struct isakmp_pl_p) + s->prop->spi_size;
+
 			/* compare proposal and select one */
 			for (p = s; p; p = p->tnext) {
-				struct isakmp_pl_p *prop = p->prop;
-
-				sa = newisakmpsa();
-				ctx.p = p;
-				ctx.sa = sa;
-				if (t2isakmpsa(p->trns, sa,
-					       iph1->vendorid_mask) < 0)
-					continue;
-				print_ph1proposal(p, sa);
-				if (iph1->rmconf != NULL) {
-					if (get_ph1approvalx(iph1->rmconf, &ctx))
-						goto found;
-				} else {
-					if (enumrmconf(&rmsel, get_ph1approvalx, &ctx))
-						goto found;
-				}
-				delisakmpsa(sa);
+				if ((sa = get_ph1approvalx(p, 
+				    iph1->rmconf->proposal, &tsa, 
+				    iph1->rmconf->pcheck_level)) != NULL)
+					goto found;
 			}
 		}
 	}
 
+	/*
+	 * if there is no suitable proposal, racoon complains about all of
+	 * mismatched items in those proposal.
+	 */
+	if (verbose_proposal_check) {
+		for (i = 0; i < MAXPROPPAIRLEN; i++) {
+			if (pair[i] == NULL)
+				continue;
+			for (s = pair[i]; s; s = s->next) {
+				prophlen = sizeof(struct isakmp_pl_p)
+						+ s->prop->spi_size;
+				for (p = s; p; p = p->tnext) {
+					print_ph1mismatched(p,
+						iph1->rmconf->proposal);
+				}
+			}
+		}
+	}
 	plog(LLV_ERROR, LOCATION, NULL, "no suitable proposal found.\n");
 
 	return NULL;
 
 found:
-	sa = ctx.sa;
 	plog(LLV_DEBUG, LOCATION, NULL, "an acceptable proposal found.\n");
 
 	/* check DH group settings */
@@ -307,7 +277,7 @@ found:
 
 	if (oakley_setdhgroup(sa->dh_group, &sa->dhgrp) == -1) {
 		sa->dhgrp = NULL;
-		delisakmpsa(sa);
+		racoon_free(sa);
 		return NULL;
 	}
 
@@ -316,16 +286,20 @@ saok:
 	if (sa->gssid != NULL)
 		plog(LLV_DEBUG, LOCATION, NULL, "gss id in new sa '%.*s'\n",
 		    (int)sa->gssid->l, sa->gssid->v);
-	if (iph1->side == INITIATOR) {
+	if (iph1-> side == INITIATOR) {
 		if (iph1->rmconf->proposal->gssid != NULL)
 			iph1->gi_i = vdup(iph1->rmconf->proposal->gssid);
-		if (sa->gssid != NULL)
-			iph1->gi_r = vdup(sa->gssid);
+		if (tsa.gssid != NULL)
+			iph1->gi_r = vdup(tsa.gssid);
+		iph1->approval = fixup_initiator_sa(sa, &tsa);
 	} else {
-		if (sa->gssid != NULL) {
-			iph1->gi_r = vdup(sa->gssid);
+		if (tsa.gssid != NULL) {
+			iph1->gi_r = vdup(tsa.gssid);
 			iph1->gi_i = gssapi_get_id(iph1);
+			if (sa->gssid == NULL && iph1->gi_i != NULL)
+				sa->gssid = vdup(iph1->gi_i);
 		}
+		iph1->approval = sa;
 	}
 	if (iph1->gi_i != NULL)
 		plog(LLV_DEBUG, LOCATION, NULL, "GIi is %.*s\n",
@@ -333,15 +307,19 @@ saok:
 	if (iph1->gi_r != NULL)
 		plog(LLV_DEBUG, LOCATION, NULL, "GIr is %.*s\n",
 		    (int)iph1->gi_r->l, iph1->gi_r->v);
+#else
+	iph1->approval = sa;
 #endif
-	plog(LLV_DEBUG, LOCATION, NULL, "agreed on %s auth.\n",
-	     s_oakley_attr_method(sa->authmethod));
+	if(iph1->approval) {
+		plog(LLV_DEBUG, LOCATION, NULL, "agreed on %s auth.\n",
+		    s_oakley_attr_method(iph1->approval->authmethod));
+	}
 
-	newsa = get_sabyproppair(doitype, sittype, p);
-	if (newsa == NULL)
-		delisakmpsa(sa);
-	else
-		iph1->approval = sa;
+	newsa = get_sabyproppair(p, iph1);
+	if (newsa == NULL){
+		delisakmpsa(iph1->approval);
+		iph1->approval = NULL;
+	}
 
 	return newsa;
 }
@@ -349,57 +327,228 @@ saok:
 /*
  * compare peer's single proposal and all of my proposal.
  * and select one if suiatable.
+ * p       : one of peer's proposal.
+ * proposal: my proposals.
  */
-static int
-get_ph1approvalx(rmconf, ctx)
-	struct remoteconf *rmconf;
-	void *ctx;
+static struct isakmpsa *
+get_ph1approvalx(p, proposal, sap, check_level)
+	struct prop_pair *p;
+	struct isakmpsa *proposal, *sap;
+	int check_level;
 {
-	struct ph1approvalx_ctx *pctx = (struct ph1approvalx_ctx *) ctx;
-	struct isakmpsa *sa;
+	struct isakmp_pl_p *prop = p->prop;
+	struct isakmp_pl_t *trns = p->trns;
+	struct isakmpsa sa, *s, *tsap;
+	int authmethod;
 
-	/* do the hard work */
-	sa = checkisakmpsa(rmconf->pcheck_level, pctx->sa, rmconf->proposal);
-	if (sa == NULL)
-		return 0;
+	plog(LLV_DEBUG, LOCATION, NULL,
+       		"prop#=%d, prot-id=%s, spi-size=%d, #trns=%d\n",
+		prop->p_no, s_ipsecdoi_proto(prop->proto_id),
+		prop->spi_size, prop->num_t);
 
-	/* duplicate and modify the found SA to match proposal */
-	sa = dupisakmpsa(sa);
+	plog(LLV_DEBUG, LOCATION, NULL,
+		"trns#=%d, trns-id=%s\n",
+		trns->t_no,
+		s_ipsecdoi_trns(prop->proto_id, trns->t_id));
 
-	switch (rmconf->pcheck_level) {
-	case PROP_CHECK_OBEY:
-		sa->lifetime = pctx->sa->lifetime;
-		sa->lifebyte = pctx->sa->lifebyte;
-		sa->encklen = pctx->sa->encklen;
-		break;
-	case PROP_CHECK_CLAIM:
-	case PROP_CHECK_STRICT:
-		if (pctx->sa->lifetime < sa->lifetime)
-			sa->lifetime = pctx->sa->lifetime;
-		if (pctx->sa->lifebyte < sa->lifebyte)
-			sa->lifebyte = pctx->sa->lifebyte;
-		if (pctx->sa->encklen > sa->encklen)
-			sa->encklen = pctx->sa->encklen;
-		break;
-	default:
-		break;
+	tsap = sap != NULL ? sap : &sa;
+
+	memset(tsap, 0, sizeof(*tsap));
+	if (t2isakmpsa(trns, tsap) < 0)
+		return NULL;
+	for (s = proposal; s != NULL; s = s->next) {
+#ifdef ENABLE_HYBRID
+		authmethod = switch_authmethod(s->authmethod);
+#else
+		authmethod = s->authmethod;
+#endif
+		plog(LLV_DEBUG, LOCATION, NULL, "Compared: DB:Peer\n");
+		plog(LLV_DEBUG, LOCATION, NULL, "(lifetime = %ld:%ld)\n",
+			(long)s->lifetime, (long)tsap->lifetime);
+		plog(LLV_DEBUG, LOCATION, NULL, "(lifebyte = %zu:%zu)\n",
+			s->lifebyte, tsap->lifebyte);
+		plog(LLV_DEBUG, LOCATION, NULL, "enctype = %s:%s\n",
+			s_oakley_attr_v(OAKLEY_ATTR_ENC_ALG,
+					s->enctype),
+			s_oakley_attr_v(OAKLEY_ATTR_ENC_ALG,
+					tsap->enctype));
+		plog(LLV_DEBUG, LOCATION, NULL, "(encklen = %d:%d)\n",
+			s->encklen, tsap->encklen);
+		plog(LLV_DEBUG, LOCATION, NULL, "hashtype = %s:%s\n",
+			s_oakley_attr_v(OAKLEY_ATTR_HASH_ALG,
+					s->hashtype),
+			s_oakley_attr_v(OAKLEY_ATTR_HASH_ALG,
+					tsap->hashtype));
+		plog(LLV_DEBUG, LOCATION, NULL, "authmethod = %s:%s\n",
+			s_oakley_attr_v(OAKLEY_ATTR_AUTH_METHOD,
+					s->authmethod),
+			s_oakley_attr_v(OAKLEY_ATTR_AUTH_METHOD,
+					tsap->authmethod));
+		plog(LLV_DEBUG, LOCATION, NULL, "dh_group = %s:%s\n",
+			s_oakley_attr_v(OAKLEY_ATTR_GRP_DESC,
+					s->dh_group),
+			s_oakley_attr_v(OAKLEY_ATTR_GRP_DESC,
+					tsap->dh_group));
+#if 0
+		/* XXX to be considered ? */
+		if (tsap->lifebyte > s->lifebyte) ;
+#endif
+		/*
+		 * if responder side and peer's key length in proposal
+		 * is bigger than mine, it might be accepted.
+		 */
+		if(tsap->enctype == s->enctype &&
+		    tsap->authmethod == authmethod &&
+		    tsap->hashtype == s->hashtype &&
+		    tsap->dh_group == s->dh_group &&
+		    tsap->encklen == s->encklen) {
+			switch(check_level) {
+			case PROP_CHECK_OBEY:
+				goto found;
+				break;
+
+			case PROP_CHECK_STRICT:
+				if ((tsap->lifetime > s->lifetime) ||
+				    (tsap->lifebyte > s->lifebyte))
+					continue;
+				goto found;
+				break;
+
+			case PROP_CHECK_CLAIM:
+				if (tsap->lifetime < s->lifetime)
+					s->lifetime = tsap->lifetime;
+				if (tsap->lifebyte < s->lifebyte)
+					s->lifebyte = tsap->lifebyte;
+				goto found;
+				break;
+
+			case PROP_CHECK_EXACT:
+				if ((tsap->lifetime != s->lifetime) ||
+				    (tsap->lifebyte != s->lifebyte))
+					continue;
+				goto found;
+				break;
+
+			default:
+				plog(LLV_ERROR, LOCATION, NULL, 
+				    "Unexpected proposal_check value\n");
+				continue;
+				break;
+			}
+		}
 	}
 
-	/* replace the proposal with our approval sa */
-	delisakmpsa(pctx->sa);
-	pctx->sa = sa;
+found:
+	if (tsap->dhgrp != NULL){
+		oakley_dhgrp_free(tsap->dhgrp);
+		tsap->dhgrp = NULL;
+	}
 
-	return 1;
+	if ((s = dupisakmpsa(s)) != NULL) {
+		switch(check_level) {
+		case PROP_CHECK_OBEY:
+			s->lifetime = tsap->lifetime;
+			s->lifebyte = tsap->lifebyte;
+			break;
+
+		case PROP_CHECK_STRICT:
+			s->lifetime = tsap->lifetime;
+			s->lifebyte = tsap->lifebyte;
+			break;
+
+		case PROP_CHECK_CLAIM:
+			if (tsap->lifetime < s->lifetime)
+				s->lifetime = tsap->lifetime;
+			if (tsap->lifebyte < s->lifebyte)
+				s->lifebyte = tsap->lifebyte;
+			break;
+
+		default:
+			break;
+		}
+	}
+	return s;
+}
+
+/*
+ * print all of items in peer's proposal which are mismatched to my proposal.
+ * p       : one of peer's proposal.
+ * proposal: my proposals.
+ */
+static void
+print_ph1mismatched(p, proposal)
+	struct prop_pair *p;
+	struct isakmpsa *proposal;
+{
+	struct isakmpsa sa, *s;
+
+	memset(&sa, 0, sizeof(sa));
+	if (t2isakmpsa(p->trns, &sa) < 0)
+		return;
+	for (s = proposal; s ; s = s->next) {
+		if (sa.enctype != s->enctype) {
+			plog(LLV_ERROR, LOCATION, NULL,
+				"rejected enctype: "
+				"DB(prop#%d:trns#%d):Peer(prop#%d:trns#%d) = "
+				"%s:%s\n",
+				s->prop_no, s->trns_no,
+				p->prop->p_no, p->trns->t_no,
+				s_oakley_attr_v(OAKLEY_ATTR_ENC_ALG,
+					s->enctype),
+				s_oakley_attr_v(OAKLEY_ATTR_ENC_ALG,
+					sa.enctype));
+		}
+		if (sa.authmethod != s->authmethod) {
+			plog(LLV_ERROR, LOCATION, NULL,
+				"rejected authmethod: "
+				"DB(prop#%d:trns#%d):Peer(prop#%d:trns#%d) = "
+				"%s:%s\n",
+				s->prop_no, s->trns_no,
+				p->prop->p_no, p->trns->t_no,
+				s_oakley_attr_v(OAKLEY_ATTR_AUTH_METHOD,
+					s->authmethod),
+				s_oakley_attr_v(OAKLEY_ATTR_AUTH_METHOD,
+					sa.authmethod));
+		}
+		if (sa.hashtype != s->hashtype) {
+			plog(LLV_ERROR, LOCATION, NULL,
+				"rejected hashtype: "
+				"DB(prop#%d:trns#%d):Peer(prop#%d:trns#%d) = "
+				"%s:%s\n",
+				s->prop_no, s->trns_no,
+				p->prop->p_no, p->trns->t_no,
+				s_oakley_attr_v(OAKLEY_ATTR_HASH_ALG,
+					s->hashtype),
+				s_oakley_attr_v(OAKLEY_ATTR_HASH_ALG,
+					sa.hashtype));
+		}
+		if (sa.dh_group != s->dh_group) {
+			plog(LLV_ERROR, LOCATION, NULL,
+				"rejected dh_group: "
+				"DB(prop#%d:trns#%d):Peer(prop#%d:trns#%d) = "
+				"%s:%s\n",
+				s->prop_no, s->trns_no,
+				p->prop->p_no, p->trns->t_no,
+				s_oakley_attr_v(OAKLEY_ATTR_GRP_DESC,
+					s->dh_group),
+				s_oakley_attr_v(OAKLEY_ATTR_GRP_DESC,
+					sa.dh_group));
+		}
+	}
+
+	if (sa.dhgrp != NULL){
+		oakley_dhgrp_free(sa.dhgrp);
+		sa.dhgrp=NULL;
+	}
 }
 
 /*
  * get ISAKMP data attributes
  */
 static int
-t2isakmpsa(trns, sa, vendorid_mask)
+t2isakmpsa(trns, sa)
 	struct isakmp_pl_t *trns;
 	struct isakmpsa *sa;
-	u_int32_t vendorid_mask;
 {
 	struct isakmp_data *d, *prev;
 	int flag, type;
@@ -469,11 +618,6 @@ t2isakmpsa(trns, sa, vendorid_mask)
 
 		case OAKLEY_ATTR_AUTH_METHOD:
 			sa->authmethod = ntohs(d->lorv);
-#ifdef HAVE_GSSAPI
-			if (sa->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB_REAL &&
-			    (vendorid_mask & VENDORID_GSSAPI_MASK))
-				sa->authmethod = OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB;
-#endif
 			break;
 
 		case OAKLEY_ATTR_GRP_DESC:
@@ -626,7 +770,7 @@ t2isakmpsa(trns, sa, vendorid_mask)
 				plog(LLV_DEBUG, LOCATION, NULL,
 				    "received old-style gss "
 				    "id '%.*s' (len %zu)\n",
-				    (int)sa->gssid->l, sa->gssid->v,
+				    (int)sa->gssid->l, sa->gssid->v, 
 				    sa->gssid->l);
 				error = 0;
 				goto out;
@@ -661,7 +805,7 @@ t2isakmpsa(trns, sa, vendorid_mask)
 			dst = sa->gssid->v;
 			dstleft = len / 2;
 
-			rv = iconv(cd, (__iconv_const char **)&src, &srcleft,
+			rv = iconv(cd, (__iconv_const char **)&src, &srcleft, 
 				   &dst, &dstleft);
 			if (rv != 0) {
 				if (rv == -1) {
@@ -747,11 +891,9 @@ ipsecdoi_selectph2proposal(iph2)
 {
 	struct prop_pair **pair;
 	struct prop_pair *ret;
-	u_int32_t doitype, sittype;
 
 	/* get proposal pair */
-	pair = get_proppair_and_doi_sit(iph2->sa, IPSECDOI_TYPE_PH2,
-					&doitype, &sittype);
+	pair = get_proppair(iph2->sa, IPSECDOI_TYPE_PH2);
 	if (pair == NULL)
 		return -1;
 
@@ -763,7 +905,7 @@ ipsecdoi_selectph2proposal(iph2)
 
 	/* make a SA to be replayed. */
 	/* SPI must be updated later. */
-	iph2->sa_ret = get_sabyproppair(doitype, sittype, ret);
+	iph2->sa_ret = get_sabyproppair(ret, iph2->ph1);
 	free_proppair0(ret);
 	if (iph2->sa_ret == NULL)
 		return -1;
@@ -787,11 +929,9 @@ ipsecdoi_checkph2proposal(iph2)
 	int i, n, num;
 	int error = -1;
 	vchar_t *sa_ret = NULL;
-	u_int32_t doitype, sittype;
 
 	/* get proposal pair of SA sent. */
-	spair = get_proppair_and_doi_sit(iph2->sa, IPSECDOI_TYPE_PH2,
-					 &doitype, &sittype);
+	spair = get_proppair(iph2->sa, IPSECDOI_TYPE_PH2);
 	if (spair == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"failed to get prop pair.\n");
@@ -832,7 +972,7 @@ ipsecdoi_checkph2proposal(iph2)
 		plog(LLV_WARNING, LOCATION, NULL,
 			"invalid proposal number:%d received.\n", i);
 	}
-
+	
 
 	if (rpair[n]->tnext != NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
@@ -857,7 +997,7 @@ ipsecdoi_checkph2proposal(iph2)
 
 	/* make a SA to be replayed. */
 	sa_ret = iph2->sa_ret;
-	iph2->sa_ret = get_sabyproppair(doitype, sittype, p);
+	iph2->sa_ret = get_sabyproppair(p, iph2->ph1);
 	free_proppair0(p);
 	if (iph2->sa_ret == NULL)
 		goto end;
@@ -1142,11 +1282,10 @@ free_proppair0(pair)
  * get proposal pairs from SA payload.
  * tiny check for proposal payload.
  */
-static struct prop_pair **
-get_proppair_and_doi_sit(sa, mode, doitype, sittype)
+struct prop_pair **
+get_proppair(sa, mode)
 	vchar_t *sa;
 	int mode;
-	u_int32_t *doitype, *sittype;
 {
 	struct prop_pair **pair = NULL;
 	int num_p = 0;			/* number of proposal for use */
@@ -1168,14 +1307,10 @@ get_proppair_and_doi_sit(sa, mode, doitype, sittype)
 	/* check DOI */
 	if (check_doi(ntohl(sab->doi)) < 0)
 		goto bad;
-	if (doitype != NULL)
-		*doitype = ntohl(sab->doi);
 
 	/* check SITUATION */
 	if (check_situation(ntohl(sab->sit)) < 0)
 		goto bad;
-	if (sittype != NULL)
-		*sittype = ntohl(sab->sit);
 
 	pair = racoon_calloc(1, MAXPROPPAIRLEN * sizeof(*pair));
 	if (pair == NULL) {
@@ -1311,15 +1446,6 @@ bad:
 	return NULL;
 }
 
-struct prop_pair **
-get_proppair(sa, mode)
-	vchar_t *sa;
-	int mode;
-{
-	return get_proppair_and_doi_sit(sa, mode, NULL, NULL);
-}
-
-
 /*
  * check transform payload.
  * OUT:
@@ -1434,9 +1560,9 @@ get_transform(prop, pair, num_p)
  * NOTE: this function make spi value clear.
  */
 vchar_t *
-get_sabyproppair(doitype, sittype, pair)
-	u_int32_t doitype, sittype;
+get_sabyproppair(pair, iph1)
 	struct prop_pair *pair;
+	struct ph1handle *iph1;
 {
 	vchar_t *newsa;
 	int newtlen;
@@ -1462,8 +1588,8 @@ get_sabyproppair(doitype, sittype, pair)
 	((struct isakmp_gen *)bp)->len = htons(newtlen);
 
 	/* update some of values in SA header */
-	((struct ipsecdoi_sa_b *)bp)->doi = htonl(doitype);
-	((struct ipsecdoi_sa_b *)bp)->sit = htonl(sittype);
+	((struct ipsecdoi_sa_b *)bp)->doi = htonl(iph1->rmconf->doitype);
+	((struct ipsecdoi_sa_b *)bp)->sit = htonl(iph1->rmconf->sittype);
 	bp += sizeof(struct ipsecdoi_sa_b);
 
 	/* create proposal payloads */
@@ -1697,96 +1823,6 @@ ipsecdoi_set_ld(buf)
 
 	return ld;
 }
-
-/*
- * parse responder-lifetime attributes from payload
- */
-int
-ipsecdoi_parse_responder_lifetime(notify, lifetime_sec, lifetime_kb)
-	struct isakmp_pl_n *notify;
-	u_int32_t *lifetime_sec;
-	u_int32_t *lifetime_kb;
-{
-	struct isakmp_data *d;
-	int flag, type, tlen, ld_type = -1;
-	u_int16_t lorv;
-	u_int32_t value;
-
-	tlen = ntohs(notify->h.len) - sizeof(*notify) - notify->spi_size;
-        d = (struct isakmp_data *)((char *)(notify + 1) +
-		notify->spi_size);
-
-	while (tlen >= sizeof(struct isakmp_data)) {
-		type = ntohs(d->type) & ~ISAKMP_GEN_MASK;
-		flag = ntohs(d->type) & ISAKMP_GEN_MASK;
-		lorv = ntohs(d->lorv);
-
-		plog(LLV_DEBUG, LOCATION, NULL,
-			"type=%s, flag=0x%04x, lorv=%s\n",
-			s_ipsecdoi_attr(type), flag,
-			s_ipsecdoi_attr_v(type, lorv));
-
-		switch (type) {
-		case IPSECDOI_ATTR_SA_LD_TYPE:
-			if (! flag) {
-				plog(LLV_ERROR, LOCATION, NULL,
-					"must be TV when LD_TYPE.\n");
-				return -1;
-			}
-			ld_type = lorv;
-			break;
-		case IPSECDOI_ATTR_SA_LD:
-			if (flag)
-				value = lorv;
-			else if (lorv == 2)
-				value = ntohs(*(u_int16_t *)(d + 1));
-			else if (lorv == 4)
-				value = ntohl(*(u_int32_t *)(d + 1));
-			else {
-				plog(LLV_ERROR, LOCATION, NULL,
-					"payload length %d for lifetime "
-					"data length is unsupported.\n", lorv);
-				return -1;
-			}
-
-			switch (ld_type) {
-			case IPSECDOI_ATTR_SA_LD_TYPE_SEC:
-				if (lifetime_sec != NULL)
-					*lifetime_sec = value;
-				plog(LLV_INFO, LOCATION, NULL,
-					"received RESPONDER-LIFETIME: %d "
-					"seconds\n", value);
-				break;
-			case IPSECDOI_ATTR_SA_LD_TYPE_KB:
-				if (lifetime_kb != NULL)
-					*lifetime_kb = value;
-				plog(LLV_INFO, LOCATION, NULL,
-					"received RESPONDER-LIFETIME: %d "
-					"kbytes\n", value);
-				break;
-			default:
-				plog(LLV_ERROR, LOCATION, NULL,
-					"lifetime data received without "
-					"lifetime data type.\n");
-				return -1;
-			}
-			break;
-		}
-
-		if (flag) {
-			tlen -= sizeof(*d);
-			d = (struct isakmp_data *)((char *)d
-				+ sizeof(*d));
-		} else {
-			tlen -= (sizeof(*d) + lorv);
-			d = (struct isakmp_data *)((char *)d
-				+ sizeof(*d) + lorv);
-		}
-	}
-
-	return 0;
-}
-
 
 /*%%%*/
 /*
@@ -2094,12 +2130,11 @@ check_attr_isakmp(trns)
 #ifdef ENABLE_HYBRID
 			case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I:
 			case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I:
-#endif
-#if defined(ENABLE_HYBRID) || defined(HAVE_GSSAPI)
-				/* These two authentication method IDs overlap. */
+#if 0 /* Clashes with OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB */
 			case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
-			/*case OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB:*/
 #endif
+#endif
+			case OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB:
 				break;
 			case OAKLEY_ATTR_AUTH_METHOD_DSSSIG:
 #ifdef ENABLE_HYBRID
@@ -2316,7 +2351,7 @@ ahmismatch:
  				if (proto_id == IPSECDOI_PROTO_IPSEC_AH) {
  					if (trns->t_id != IPSECDOI_AH_SHA256)
  						goto ahmismatch;
- 				}
+ 				}	
  				break;
  			case IPSECDOI_ATTR_AUTH_HMAC_SHA2_384:
  				if (proto_id == IPSECDOI_PROTO_IPSEC_AH) {
@@ -2733,7 +2768,7 @@ setph1attr(sa, buf)
 						OAKLEY_ATTR_SA_LD_TYPE_SEC);
 			if (sa->lifetime > 0xffff) {
 				p = isakmp_set_attr_v(p, OAKLEY_ATTR_SA_LD,
-						(caddr_t)&lifetime,
+						(caddr_t)&lifetime, 
 						sizeof(lifetime));
 			} else {
 				p = isakmp_set_attr_l(p, OAKLEY_ATTR_SA_LD,
@@ -2744,7 +2779,7 @@ setph1attr(sa, buf)
 
 	if (sa->lifebyte) {
 		u_int32_t lifebyte = htonl((u_int32_t)sa->lifebyte);
-
+		
 		attrlen += sizeof(struct isakmp_data)
 			+ sizeof(struct isakmp_data);
 		if (sa->lifebyte > 0xffff)
@@ -2776,8 +2811,11 @@ setph1attr(sa, buf)
 	if (sa->authmethod) {
 		int authmethod;
 
-		authmethod = isakmpsa_switch_authmethod(sa->authmethod);
-		authmethod &= 0xffff;
+#ifdef ENABLE_HYBRID
+		authmethod = switch_authmethod(sa->authmethod);
+#else
+		authmethod = sa->authmethod;
+#endif
 		attrlen += sizeof(struct isakmp_data);
 		if (buf)
 			p = isakmp_set_attr_l(p, OAKLEY_ATTR_AUTH_METHOD, authmethod);
@@ -2859,7 +2897,7 @@ setph1attr(sa, buf)
 					goto gssid_done;
 				}
 				odst = dst;
-				rv = iconv(cd, (__iconv_const char **)&src,
+				rv = iconv(cd, (__iconv_const char **)&src, 
 				    &srcleft, &dst, &dstleft);
 				if (rv != 0) {
 					if (rv == -1) {
@@ -2952,7 +2990,7 @@ setph2proposal0(iph2, pp, pr)
 	np_t = NULL;
 
 	for (tr = pr->head; tr; tr = tr->next) {
-
+	
 		switch (pr->proto_id) {
 		case IPSECDOI_PROTO_IPSEC_ESP:
 			/*
@@ -3200,9 +3238,7 @@ ipsecdoi_transportmode(pp)
 
 	for (; pp; pp = pp->next) {
 		for (pr = pp->head; pr; pr = pr->next) {
-			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS &&
-			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC &&
-			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_DRAFT)
+			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS)
 				return 0;
 		}
 	}
@@ -3562,6 +3598,8 @@ ipsecdoi_checkid1(iph1)
 	struct ph1handle *iph1;
 {
 	struct ipsecdoi_id_b *id_b;
+	struct sockaddr *sa;
+	caddr_t sa1, sa2;
 
 	if (iph1->id_p == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
@@ -3631,12 +3669,73 @@ ipsecdoi_checkid1(iph1)
 		}
 	}
 
-	/* resolve remote configuration if not done yet */
-	if (resolveph1rmconf(iph1) < 0)
-		return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
+	/* compare with the ID if specified. */
+	if (genlist_next(iph1->rmconf->idvl_p, 0)) {
+		vchar_t *ident0 = NULL;
+		vchar_t ident;
+		struct idspec *id;
+		struct genlist_entry *gpb;
 
-	if (iph1->rmconf == NULL)
-		return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
+		for (id = genlist_next (iph1->rmconf->idvl_p, &gpb); id; id = genlist_next (0, &gpb)) {
+			/* check the type of both IDs */
+			if (id->idtype != doi2idtype(id_b->type))
+				continue;  /* ID type mismatch */
+			if (id->id == 0)
+				goto matched;
+
+			/* compare defined ID with the ID sent by peer. */
+			if (ident0 != NULL)
+				vfree(ident0);
+			ident0 = getidval(id->idtype, id->id);
+
+			switch (id->idtype) {
+			case IDTYPE_ASN1DN:
+				ident.v = iph1->id_p->v + sizeof(*id_b);
+				ident.l = iph1->id_p->l - sizeof(*id_b);
+				if (eay_cmp_asn1dn(ident0, &ident) == 0)
+					goto matched;
+				break;
+			case IDTYPE_ADDRESS:
+				sa = (struct sockaddr *)ident0->v;
+				sa2 = (caddr_t)(id_b + 1);
+				switch (sa->sa_family) {
+				case AF_INET:
+					if (iph1->id_p->l - sizeof(*id_b) != sizeof(struct in_addr))
+						continue;  /* ID value mismatch */
+					sa1 = (caddr_t)&((struct sockaddr_in *)sa)->sin_addr;
+					if (memcmp(sa1, sa2, sizeof(struct in_addr)) == 0)
+						goto matched;
+					break;
+#ifdef INET6
+				case AF_INET6:
+					if (iph1->id_p->l - sizeof(*id_b) != sizeof(struct in6_addr))
+						continue;  /* ID value mismatch */
+					sa1 = (caddr_t)&((struct sockaddr_in6 *)sa)->sin6_addr;
+					if (memcmp(sa1, sa2, sizeof(struct in6_addr)) == 0)
+						goto matched;
+					break;
+#endif
+				default:
+					break;
+				}
+				break;
+			default:
+				if (memcmp(ident0->v, id_b + 1, ident0->l) == 0)
+					goto matched;
+				break;
+			}
+		}
+		if (ident0 != NULL) {
+			vfree(ident0);
+			ident0 = NULL;
+		}
+		plog(LLV_WARNING, LOCATION, NULL, "No ID match.\n");
+		if (iph1->rmconf->verify_identifier)
+			return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
+matched: /* ID value match */
+		if (ident0 != NULL)
+			vfree(ident0);
+	}
 
 	return 0;
 }
@@ -3663,15 +3762,15 @@ ipsecdoi_setid1(iph1)
 	switch (iph1->rmconf->idvtype) {
 	case IDTYPE_FQDN:
 		id_b.type = IPSECDOI_ID_FQDN;
-		ident = vdup(iph1->rmconf->idv);
+		ident = getidval(iph1->rmconf->idvtype, iph1->rmconf->idv);
 		break;
 	case IDTYPE_USERFQDN:
 		id_b.type = IPSECDOI_ID_USER_FQDN;
-		ident = vdup(iph1->rmconf->idv);
+		ident = getidval(iph1->rmconf->idvtype, iph1->rmconf->idv);
 		break;
 	case IDTYPE_KEYID:
 		id_b.type = IPSECDOI_ID_KEY_ID;
-		ident = vdup(iph1->rmconf->idv);
+		ident = getidval(iph1->rmconf->idvtype, iph1->rmconf->idv);
 		break;
 	case IDTYPE_ASN1DN:
 		id_b.type = IPSECDOI_ID_DER_ASN1_DN;
@@ -3729,7 +3828,7 @@ ipsecdoi_setid1(iph1)
 		if (!ident) {
 			plog(LLV_ERROR, LOCATION, NULL,
 				"failed to get ID buffer.\n");
-			return -1;
+			return 0;
 		}
 		memcpy(ident->v, p, ident->l);
 	    }
@@ -3737,7 +3836,7 @@ ipsecdoi_setid1(iph1)
 	if (!ident) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"failed to get ID buffer.\n");
-		return -1;
+		return 0;
 	}
 
 	ret = vmalloc(sizeof(id_b) + ident->l);
@@ -3763,6 +3862,18 @@ err:
 		vfree(ident);
 	plog(LLV_ERROR, LOCATION, NULL, "failed get my ID\n");
 	return -1;
+}
+
+static vchar_t *
+getidval(type, val)
+	int type;
+	vchar_t *val;
+{
+	vchar_t *new = NULL;
+
+	if (val)
+		new = vdup(val);
+	return new;
 }
 
 /* it's only called by cfparse.y. */
@@ -3807,9 +3918,9 @@ set_identifier_qual(vpp, type, value, qual)
 		memcpy(new->v, value->v, new->l);
 		break;
 	case IDTYPE_KEYID:
-		/*
+		/* 
 		 * If no qualifier is specified: IDQUAL_UNSPEC. It means
-		 * to use a file for backward compatibility sake.
+		 * to use a file for backward compatibility sake. 
 		 */
 		switch(qual) {
 		case IDQUAL_FILE:
@@ -3854,7 +3965,7 @@ set_identifier_qual(vpp, type, value, qual)
 			return -1;
 		}
 		break;
-
+	
 	case IDTYPE_ADDRESS: {
 		struct sockaddr *sa;
 
@@ -3898,7 +4009,7 @@ set_identifier_qual(vpp, type, value, qual)
 
 			xn = d2i_X509_NAME(NULL, (void *)&ptr, new->l);
 			bio = BIO_new(BIO_s_mem());
-
+			
 			X509_NAME_print_ex(bio, xn, 0, 0);
 			len = BIO_get_mem_data(bio, &ptr);
 			save = ptr[len];
@@ -3938,25 +4049,8 @@ ipsecdoi_setid2(iph2)
 		return -1;
 	}
 
-	if (!ipsecdoi_transportmode(iph2->proposal))
-		iph2->id = ipsecdoi_sockaddr2id((struct sockaddr *)&sp->spidx.src,
-				sp->spidx.prefs, sp->spidx.ul_proto);
-	else if (iph2->sa_src != NULL) {
-		/* He have a specific hint indicating that the transport
-		 * mode SA will be negotiated using addresses that differ
-		 * with the one from the SA. We need to indicate that to
-		 * our peer by setting the SA address as ID.
-		 * This is typically the case for the bootstrapping of the
-		 * transport mode SA protecting BU/BA for MIPv6 traffic
-		 *
-		 * --arno*/
-		iph2->id = ipsecdoi_sockaddr2id(iph2->sa_src,
-						IPSECDOI_PREFIX_HOST,
-						sp->spidx.ul_proto);
-	} else
-		iph2->id = ipsecdoi_sockaddr2id(iph2->src, IPSECDOI_PREFIX_HOST,
-						sp->spidx.ul_proto);
-
+	iph2->id = ipsecdoi_sockaddr2id((struct sockaddr *)&sp->spidx.src,
+					sp->spidx.prefs, sp->spidx.ul_proto);
 	if (iph2->id == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"failed to get ID for %s\n",
@@ -3967,18 +4061,8 @@ ipsecdoi_setid2(iph2)
 		s_ipsecdoi_ident(((struct ipsecdoi_id_b *)iph2->id->v)->type));
 
 	/* remote side */
-	if (!ipsecdoi_transportmode(iph2->proposal))
-		iph2->id_p = ipsecdoi_sockaddr2id((struct sockaddr *)&sp->spidx.dst,
+	iph2->id_p = ipsecdoi_sockaddr2id((struct sockaddr *)&sp->spidx.dst,
 				sp->spidx.prefd, sp->spidx.ul_proto);
-	else if (iph2->sa_dst != NULL) {
-		/* See comment above for local side. */
-		iph2->id_p = ipsecdoi_sockaddr2id(iph2->sa_dst,
-						  IPSECDOI_PREFIX_HOST,
-						  sp->spidx.ul_proto);
-	} else
-		iph2->id_p = ipsecdoi_sockaddr2id(iph2->dst, IPSECDOI_PREFIX_HOST,
-			sp->spidx.ul_proto);
-
 	if (iph2->id_p == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"failed to get ID for %s\n",
@@ -4015,7 +4099,7 @@ ipsecdoi_sockaddr2id(saddr, prefixlen, ul_proto)
 	switch (saddr->sa_family) {
 	case AF_INET:
 		len1 = sizeof(struct in_addr);
-		if (prefixlen >= (sizeof(struct in_addr) << 3)) {
+		if (prefixlen == (sizeof(struct in_addr) << 3)) {
 			type = IPSECDOI_ID_IPV4_ADDR;
 			len2 = 0;
 		} else {
@@ -4028,7 +4112,7 @@ ipsecdoi_sockaddr2id(saddr, prefixlen, ul_proto)
 #ifdef INET6
 	case AF_INET6:
 		len1 = sizeof(struct in6_addr);
-		if (prefixlen >= (sizeof(struct in6_addr) << 3)) {
+		if (prefixlen == (sizeof(struct in6_addr) << 3)) {
 			type = IPSECDOI_ID_IPV6_ADDR;
 			len2 = 0;
 		} else {
@@ -4073,7 +4157,7 @@ ipsecdoi_sockaddr2id(saddr, prefixlen, ul_proto)
 
 	/* set prefix */
 	if (len2) {
-		u_char *p = (unsigned char *) new->v +
+		u_char *p = (unsigned char *) new->v + 
 			sizeof(struct ipsecdoi_id_b) + len1;
 		u_int bits = prefixlen;
 
@@ -4144,10 +4228,10 @@ ipsecdoi_sockrange2id(laddr, haddr, ul_proto)
 	port = ((struct sockaddr_in *)(laddr))->sin_port;
 	((struct ipsecdoi_id_b *)new->v)->port =
 		port == IPSEC_PORT_ANY ? 0 : port;
-	memcpy(new->v + sizeof(struct ipsecdoi_id_b),
-	       (caddr_t)&((struct sockaddr_in *)(laddr))->sin_addr,
+	memcpy(new->v + sizeof(struct ipsecdoi_id_b), 
+	       (caddr_t)&((struct sockaddr_in *)(laddr))->sin_addr, 
 	       len1);
-	memcpy(new->v + sizeof(struct ipsecdoi_id_b) + len1,
+	memcpy(new->v + sizeof(struct ipsecdoi_id_b) + len1, 
 	       (caddr_t)&((struct sockaddr_in *)haddr)->sin_addr,
 	       len2);
 	return new;
@@ -4166,13 +4250,8 @@ ipsecdoi_id2sockaddr(buf, saddr, prefixlen, ul_proto)
 	u_int8_t *prefixlen;
 	u_int16_t *ul_proto;
 {
-	struct ipsecdoi_id_b *id_b = NULL;
+	struct ipsecdoi_id_b *id_b = (struct ipsecdoi_id_b *)buf->v;
 	u_int plen = 0;
-
-	if (buf == NULL)
-		return ISAKMP_INTERNAL_ERROR;
-
-	id_b = (struct ipsecdoi_id_b *)buf->v;
 
 	/*
 	 * When a ID payload of subnet type with a IP address of full bit
@@ -4208,14 +4287,10 @@ ipsecdoi_id2sockaddr(buf, saddr, prefixlen, ul_proto)
 				: id_b->port);		/* see sockaddr2id() */
 		memcpy(&((struct sockaddr_in6 *)saddr)->sin6_addr,
 			buf->v + sizeof(*id_b), sizeof(struct in6_addr));
-		((struct sockaddr_in6 *)saddr)->sin6_scope_id =
-			(IN6_IS_ADDR_LINKLOCAL(&((struct sockaddr_in6 *)saddr)->sin6_addr)
-				? ((struct sockaddr_in6 *)id_b)->sin6_scope_id
-				: 0);
-
 		break;
 #endif
 	default:
+		do_plog(LLV_INFO, "XXXXXXXXXXXXXXXXXXXXXX error\n");
 		plog(LLV_ERROR, LOCATION, NULL,
 			"unsupported ID type %d\n", id_b->type);
 		return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
@@ -4306,20 +4381,29 @@ ipsecdoi_id2str(id)
 	char *dat;
 	static char buf[BUFLEN];
 	struct ipsecdoi_id_b *id_b = (struct ipsecdoi_id_b *)id->v;
-	union sockaddr_any saddr;
+	struct sockaddr_storage saddr_storage;
+	struct sockaddr        *saddr;
+	struct sockaddr_in     *saddr_in;
+	struct sockaddr_in6    *saddr_in6;
 	u_int plen = 0;
 
+	saddr     = (struct sockaddr *)&saddr_storage;
+	saddr_in  = (struct sockaddr_in *)&saddr_storage;
+	saddr_in6 = (struct sockaddr_in6 *)&saddr_storage;
+
+	
 	switch (id_b->type) {
 	case IPSECDOI_ID_IPV4_ADDR:
 	case IPSECDOI_ID_IPV4_ADDR_SUBNET:
 	case IPSECDOI_ID_IPV4_ADDR_RANGE:
 
 #ifndef __linux__
-		saddr.sa.sa_len = sizeof(struct sockaddr_in);
+		saddr->sa_len = sizeof(struct sockaddr_in);
 #endif
-		saddr.sa.sa_family = AF_INET;
-		saddr.sin.sin_port = IPSEC_PORT_ANY;
-		memcpy(&saddr.sin.sin_addr,
+		saddr->sa_family = AF_INET;
+
+		saddr_in->sin_port = IPSEC_PORT_ANY;
+		memcpy(&saddr_in->sin_addr,
 			id->v + sizeof(*id_b), sizeof(struct in_addr));
 		break;
 #ifdef INET6
@@ -4328,14 +4412,15 @@ ipsecdoi_id2str(id)
 	case IPSECDOI_ID_IPV6_ADDR_RANGE:
 
 #ifndef __linux__
-		saddr.sa.sa_len = sizeof(struct sockaddr_in6);
+		saddr->sa_len = sizeof(struct sockaddr_in6);
 #endif
-		saddr.sa.sa_family = AF_INET6;
-		saddr.sin6.sin6_port = IPSEC_PORT_ANY;
-		memcpy(&saddr.sin6.sin6_addr,
+		saddr->sa_family = AF_INET6;
+
+		saddr_in6->sin6_port = IPSEC_PORT_ANY;
+		memcpy(&saddr_in6->sin6_addr,
 			id->v + sizeof(*id_b), sizeof(struct in6_addr));
-		saddr.sin6.sin6_scope_id =
-			(IN6_IS_ADDR_LINKLOCAL(&saddr.sin6.sin6_addr)
+		saddr_in6->sin6_scope_id =
+			(IN6_IS_ADDR_LINKLOCAL(&saddr_in6->sin6_addr)
 				? ((struct sockaddr_in6 *)id_b)->sin6_scope_id
 				: 0);
 		break;
@@ -4347,7 +4432,7 @@ ipsecdoi_id2str(id)
 #ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR:
 #endif
-		len = snprintf( buf, BUFLEN, "%s", saddrwop2str(&saddr.sa));
+		len = snprintf( buf, BUFLEN, "%s", saddrwop2str(saddr));
 		break;
 
 	case IPSECDOI_ID_IPV4_ADDR_SUBNET:
@@ -4403,44 +4488,47 @@ ipsecdoi_id2str(id)
 			plen += l;
 		}
 
-		len = snprintf( buf, BUFLEN, "%s/%i", saddrwop2str(&saddr.sa), plen);
+		len = snprintf( buf, BUFLEN, "%s/%i", saddrwop2str(saddr), plen);
 	    }
 		break;
 
 	case IPSECDOI_ID_IPV4_ADDR_RANGE:
 
-		len = snprintf( buf, BUFLEN, "%s-", saddrwop2str(&saddr.sa));
+		len = snprintf( buf, BUFLEN, "%s-", saddrwop2str(saddr));
 
 #ifndef __linux__
-		saddr.sa.sa_len = sizeof(struct sockaddr_in);
+		saddr->sa_len = sizeof(struct sockaddr_in);
 #endif
-		saddr.sa.sa_family = AF_INET;
-		saddr.sin.sin_port = IPSEC_PORT_ANY;
-		memcpy(&saddr.sin.sin_addr,
+		saddr->sa_family = AF_INET;
+		saddr_in->sin_port = IPSEC_PORT_ANY;
+		memcpy(&saddr_in->sin_addr,
 			id->v + sizeof(*id_b) + sizeof(struct in_addr),
 			sizeof(struct in_addr));
 
-		len += snprintf(buf + len, BUFLEN - len, "%s", saddrwop2str(&saddr.sa));
+		len += snprintf( buf + len, BUFLEN - len, "%s", saddrwop2str(saddr));
+
 		break;
 
 #ifdef INET6
 	case IPSECDOI_ID_IPV6_ADDR_RANGE:
-		len = snprintf( buf, BUFLEN, "%s-", saddrwop2str(&saddr.sa));
+
+		len = snprintf( buf, BUFLEN, "%s-", saddrwop2str(saddr));
 
 #ifndef __linux__
-		saddr.sa.sa_len = sizeof(struct sockaddr_in6);
+		saddr->sa_len = sizeof(struct sockaddr_in6);
 #endif
-		saddr.sa.sa_family = AF_INET6;
-		saddr.sin6.sin6_port = IPSEC_PORT_ANY;
-		memcpy(&saddr.sin6.sin6_addr,
+		saddr->sa_family = AF_INET6;
+		saddr_in6->sin6_port = IPSEC_PORT_ANY;
+		memcpy(&saddr_in6->sin6_addr,
 			id->v + sizeof(*id_b) + sizeof(struct in6_addr),
 			sizeof(struct in6_addr));
-		saddr.sin6.sin6_scope_id =
-			(IN6_IS_ADDR_LINKLOCAL(&saddr.sin6.sin6_addr)
+		saddr_in6->sin6_scope_id =
+			(IN6_IS_ADDR_LINKLOCAL(&saddr_in6->sin6_addr)
 				? ((struct sockaddr_in6 *)id_b)->sin6_scope_id
 				: 0);
 
-		len += snprintf(buf + len, BUFLEN - len, "%s", saddrwop2str(&saddr.sa));
+		len += snprintf( buf + len, BUFLEN - len, "%s", saddrwop2str(saddr));
+
 		break;
 #endif
 
@@ -4745,12 +4833,24 @@ ipsecdoi_authalg2trnsid(alg)
 	return -1;
 }
 
+#ifdef HAVE_GSSAPI
+struct isakmpsa *
+fixup_initiator_sa(match, received)
+	struct isakmpsa *match, *received;
+{
+	if (received->gssid != NULL)
+		match->gssid = vdup(received->gssid);
+
+	return match;
+}
+#endif
+
 static int rm_idtype2doi[] = {
 	255,				/* IDTYPE_UNDEFINED, 0 */
 	IPSECDOI_ID_FQDN,		/* IDTYPE_FQDN, 1 */
 	IPSECDOI_ID_USER_FQDN,		/* IDTYPE_USERFQDN, 2 */
 	IPSECDOI_ID_KEY_ID,		/* IDTYPE_KEYID, 3 */
-	255,    /*			   IDTYPE_ADDRESS, 4
+	255,    /*			   IDTYPE_ADDRESS, 4 
 		 * it expands into 4 types by another function. */
 	IPSECDOI_ID_DER_ASN1_DN,	/* IDTYPE_ASN1DN, 5 */
 };
@@ -4794,4 +4894,129 @@ doi2idtype(doi)
 		return(IDTYPE_ADDRESS);	/* XXX */
 	}
 	/*NOTREACHED*/
+}
+
+#ifdef ENABLE_HYBRID
+static int
+switch_authmethod(authmethod)
+	int authmethod;
+{
+	switch(authmethod) {
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I;
+		break;
+	/* Those are not implemented */
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAENC_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAENC_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_I;
+		break;
+	default:
+		break;
+	}
+
+	return authmethod;
+}
+#endif
+
+/*
+ * parse responder-lifetime attributes from payload
+ */
+int
+ipsecdoi_parse_responder_lifetime(notify, lifetime_sec, lifetime_kb)
+	struct isakmp_pl_n *notify;
+	u_int32_t *lifetime_sec;
+	u_int32_t *lifetime_kb;
+{
+	struct isakmp_data *d;
+	int flag, type, tlen, ld_type = -1;
+	u_int16_t lorv;
+	u_int32_t value;
+
+	tlen = ntohs(notify->h.len) - sizeof(*notify) - notify->spi_size;
+        d = (struct isakmp_data *)((char *)(notify + 1) +
+		notify->spi_size);
+
+	while (tlen >= sizeof(struct isakmp_data)) {
+		type = ntohs(d->type) & ~ISAKMP_GEN_MASK;
+		flag = ntohs(d->type) & ISAKMP_GEN_MASK;
+		lorv = ntohs(d->lorv);
+
+		plog(LLV_DEBUG, LOCATION, NULL,
+			"type=%s, flag=0x%04x, lorv=%s\n",
+			s_ipsecdoi_attr(type), flag,
+			s_ipsecdoi_attr_v(type, lorv));
+
+		switch (type) {
+		case IPSECDOI_ATTR_SA_LD_TYPE:
+			if (! flag) {
+				plog(LLV_ERROR, LOCATION, NULL,
+					"must be TV when LD_TYPE.\n");
+				return -1;
+			}
+			ld_type = lorv;
+			break;
+		case IPSECDOI_ATTR_SA_LD:
+			if (flag)
+				value = lorv;
+			else if (lorv == 2)
+				value = ntohs(*(u_int16_t *)(d + 1));
+			else if (lorv == 4)
+				value = ntohl(*(u_int32_t *)(d + 1));
+			else {
+				plog(LLV_ERROR, LOCATION, NULL,
+					"payload length %d for lifetime "
+					"data length is unsupported.\n", lorv);
+				return -1;
+			}
+
+			switch (ld_type) {
+			case IPSECDOI_ATTR_SA_LD_TYPE_SEC:
+				if (lifetime_sec != NULL)
+					*lifetime_sec = value;
+				plog(LLV_INFO, LOCATION, NULL,
+					"received RESPONDER-LIFETIME: %d "
+					"seconds\n", value);
+				break;
+			case IPSECDOI_ATTR_SA_LD_TYPE_KB:
+				if (lifetime_kb != NULL)
+					*lifetime_kb = value;
+				plog(LLV_INFO, LOCATION, NULL,
+					"received RESPONDER-LIFETIME: %d "
+					"kbytes\n", value);
+				break;
+			default:
+				plog(LLV_ERROR, LOCATION, NULL,
+					"lifetime data received without "
+					"lifetime data type.\n");
+				return -1;
+			}
+			break;
+		}
+
+		if (flag) {
+			tlen -= sizeof(*d);
+			d = (struct isakmp_data *)((char *)d
+				+ sizeof(*d));
+		} else {
+			tlen -= (sizeof(*d) + lorv);
+			d = (struct isakmp_data *)((char *)d
+				+ sizeof(*d) + lorv);
+		}
+	}
+
+	return 0;
 }

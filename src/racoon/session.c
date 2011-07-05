@@ -1,11 +1,11 @@
-/*	$NetBSD: session.c,v 1.7.6.2 2007/08/01 11:52:22 vanhu Exp $	*/
+/*	$NetBSD: session.c,v 1.32 2011/03/02 15:09:16 vanhu Exp $	*/
 
 /*	$KAME: session.c,v 1.32 2003/09/24 02:01:17 jinmei Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -17,7 +17,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -59,6 +59,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <paths.h>
+#include <err.h>
 
 #include <netinet/in.h>
 #include <resolv.h>
@@ -77,6 +78,8 @@
 #include "evt.h"
 #include "cfparse_proto.h"
 #include "isakmp_var.h"
+#include "isakmp.h"
+#include "isakmp_var.h"
 #include "isakmp_xauth.h"
 #include "isakmp_cfg.h"
 #include "admin_var.h"
@@ -88,80 +91,174 @@
 #include "localconf.h"
 #include "remoteconf.h"
 #include "backupsa.h"
+#include "remoteconf.h"
 #ifdef ENABLE_NATT
 #include "nattraversal.h"
 #endif
-
 
 #include "algorithm.h" /* XXX ??? */
 
 #include "sainfo.h"
 
+struct fd_monitor {
+	int (*callback)(void *ctx, int fd);
+	void *ctx;
+	int prio;
+	int fd;
+	TAILQ_ENTRY(fd_monitor) chain;
+};
+
+#define NUM_PRIORITIES 2
+
 static void close_session __P((void));
-static void check_rtsock __P((void *));
 static void initfds __P((void));
 static void init_signal __P((void));
 static int set_signal __P((int sig, RETSIGTYPE (*func) __P((int))));
 static void check_sigreq __P((void));
-static void check_flushsa_stub __P((void *));
 static void check_flushsa __P((void));
 static int close_sockets __P((void));
 
-static fd_set mask0;
-static fd_set maskdying;
+static fd_set preset_mask, active_mask;
+static struct fd_monitor fd_monitors[FD_SETSIZE];
+static TAILQ_HEAD(fd_monitor_list, fd_monitor) fd_monitor_tree[NUM_PRIORITIES];
 static int nfds = 0;
+
 static volatile sig_atomic_t sigreq[NSIG + 1];
-static int dying = 0;
+static struct sched scflushsa = SCHED_INITIALIZER();
+
+void
+monitor_fd(int fd, int (*callback)(void *, int), void *ctx, int priority)
+{
+	if (fd < 0 || fd >= FD_SETSIZE) {
+		plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun");
+		exit(1);
+	}
+
+	FD_SET(fd, &preset_mask);
+	if (fd > nfds)
+		nfds = fd;
+	if (priority <= 0)
+		priority = 0;
+	if (priority >= NUM_PRIORITIES)
+		priority = NUM_PRIORITIES - 1;
+
+	fd_monitors[fd].callback = callback;
+	fd_monitors[fd].ctx = ctx;
+	fd_monitors[fd].prio = priority;
+	fd_monitors[fd].fd = fd;
+	TAILQ_INSERT_TAIL(&fd_monitor_tree[priority],
+			  &fd_monitors[fd], chain);
+}
+
+void
+unmonitor_fd(int fd)
+{
+	if (fd < 0 || fd >= FD_SETSIZE) {
+		plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun");
+		exit(1);
+	}
+
+	if (fd_monitors[fd].callback == NULL)
+		return;
+
+	FD_CLR(fd, &preset_mask);
+	FD_CLR(fd, &active_mask);
+	fd_monitors[fd].callback = NULL;
+	fd_monitors[fd].ctx = NULL;
+	TAILQ_REMOVE(&fd_monitor_tree[fd_monitors[fd].prio],
+		     &fd_monitors[fd], chain);
+}
 
 int
 session(void)
 {
-	fd_set rfds;
 	struct timeval *timeout;
 	int error;
-	struct myaddrs *p;
 	char pid_file[MAXPATHLEN];
 	FILE *fp;
 	pid_t racoon_pid = 0;
-	int i;
+	int i, count;
+	struct fd_monitor *fdm;
+
+	nfds = 0;
+	FD_ZERO(&preset_mask);
+
+	for (i = 0; i < NUM_PRIORITIES; i++)
+		TAILQ_INIT(&fd_monitor_tree[i]);
 
 	/* initialize schedular */
 	sched_init();
-
 	init_signal();
+
+	if (pfkey_init() < 0)
+		errx(1, "failed to initialize pfkey socket");
+
+	if (isakmp_init() < 0)
+		errx(1, "failed to initialize ISAKMP structures");
+
+#ifdef ENABLE_HYBRID
+	if (isakmp_cfg_init(ISAKMP_CFG_INIT_COLD))
+		errx(1, "could not initialize ISAKMP mode config structures");
+#endif
+
+#ifdef HAVE_LIBLDAP
+	if (xauth_ldap_init_conf() != 0)
+		errx(1, "could not initialize ldap config");
+#endif
+
+#ifdef HAVE_LIBRADIUS
+	if (xauth_radius_init_conf(0) != 0)
+		errx(1, "could not initialize radius config");
+#endif
+
+	myaddr_init_lists();
+
+	/*
+	 * in order to prefer the parameters by command line,
+	 * saving some parameters before parsing configuration file.
+	 */
+	save_params();
+	if (cfparse() != 0)
+		errx(1, "failed to parse configuration file.");
+	restore_params();
 
 #ifdef ENABLE_ADMINPORT
 	if (admin_init() < 0)
-		exit(1);
+		errx(1, "failed to initialize admin port socket");
 #endif
 
-	initmyaddr();
 
-	if (isakmp_init() < 0)
-		exit(1);
+#ifdef ENABLE_HYBRID
+	if(isakmp_cfg_config.network4 && isakmp_cfg_config.pool_size == 0)
+		if ((error = isakmp_cfg_resize_pool(ISAKMP_CFG_MAX_CNX)) != 0)
+			return error;
+#endif
 
-	initfds();
+	if (dump_config)
+		dumprmconf();
+
+#ifdef HAVE_LIBRADIUS
+	if (xauth_radius_init() != 0)
+		errx(1, "could not initialize libradius");
+#endif
+
+	if (myaddr_init() != 0)
+		errx(1, "failed to listen to configured addresses");
+	myaddr_sync();
 
 #ifdef ENABLE_NATT
 	natt_keepalive_init ();
 #endif
 
-	if (privsep_init() != 0)
-		exit(1);
-
-	for (i = 0; i <= NSIG; i++)
-		sigreq[i] = 0;
-
 	/* write .pid file */
-	racoon_pid = getpid();
-	if (lcconf->pathinfo[LC_PATHTYPE_PIDFILE] == NULL) 
+	if (lcconf->pathinfo[LC_PATHTYPE_PIDFILE] == NULL)
 		strlcpy(pid_file, _PATH_VARRUN "racoon.pid", MAXPATHLEN);
-	else if (lcconf->pathinfo[LC_PATHTYPE_PIDFILE][0] == '/') 
+	else if (lcconf->pathinfo[LC_PATHTYPE_PIDFILE][0] == '/')
 		strlcpy(pid_file, lcconf->pathinfo[LC_PATHTYPE_PIDFILE], MAXPATHLEN);
 	else {
 		strlcat(pid_file, _PATH_VARRUN, MAXPATHLEN);
 		strlcat(pid_file, lcconf->pathinfo[LC_PATHTYPE_PIDFILE], MAXPATHLEN);
-	} 
+	}
 	fp = fopen(pid_file, "w");
 	if (fp) {
 		if (fchmod(fileno(fp),
@@ -170,19 +267,26 @@ session(void)
 			fclose(fp);
 			exit(1);
 		}
-		fprintf(fp, "%ld\n", (long)racoon_pid);
-		fclose(fp);
 	} else {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"cannot open %s", pid_file);
 	}
 
-	while (1) {
-		if (dying)
-			rfds = maskdying;
-		else
-			rfds = mask0;
+	if (privsep_init() != 0)
+		exit(1);
 
+	/*
+	 * The fork()'ed privileged side will close its copy of fp.  We wait
+	 * until here to get the correct child pid.
+	 */
+	racoon_pid = getpid();
+	fprintf(fp, "%ld\n", (long)racoon_pid);
+	fclose(fp);
+
+	for (i = 0; i <= NSIG; i++)
+		sigreq[i] = 0;
+
+	while (1) {
 		/*
 		 * asynchronous requests via signal.
 		 * make sure to reset sigreq to 0.
@@ -192,7 +296,11 @@ session(void)
 		/* scheduling */
 		timeout = schedular();
 
-		error = select(nfds, &rfds, (fd_set *)0, (fd_set *)0, timeout);
+		/* schedular can change select() mask, so we reset
+		 * the working copy here */
+		active_mask = preset_mask;
+
+		error = select(nfds + 1, &active_mask, NULL, NULL, timeout);
 		if (error < 0) {
 			switch (errno) {
 			case EINTR:
@@ -206,28 +314,24 @@ session(void)
 			/*NOTREACHED*/
 		}
 
-#ifdef ENABLE_ADMINPORT
-		if ((lcconf->sock_admin != -1) &&
-		    (FD_ISSET(lcconf->sock_admin, &rfds)))
-			admin_handler();
-#endif
+		count = 0;
+		for (i = 0; i < NUM_PRIORITIES; i++) {
+			TAILQ_FOREACH(fdm, &fd_monitor_tree[i], chain) {
+				if (!FD_ISSET(fdm->fd, &active_mask))
+					continue;
 
-		for (p = lcconf->myaddrs; p; p = p->next) {
-			if (!p->addr)
-				continue;
-			if (FD_ISSET(p->sock, &rfds))
-				isakmp_handler(p->sock);
+				FD_CLR(fdm->fd, &active_mask);
+				if (fdm->callback != NULL) {
+					fdm->callback(fdm->ctx, fdm->fd);
+					count++;
+				} else
+					plog(LLV_ERROR, LOCATION, NULL,
+					"fd %d set, but no active callback\n", i);
+			}
+			if (count != 0)
+				break;
 		}
 
-		if (FD_ISSET(lcconf->sock_pfkey, &rfds))
-			pfkey_handler();
-
-		if (lcconf->rtsock >= 0 && FD_ISSET(lcconf->rtsock, &rfds)) {
-			if (update_myaddrs() && lcconf->autograbaddr)
-				check_rtsock(NULL);
-			else
-				initfds();
-		}
 	}
 }
 
@@ -235,82 +339,18 @@ session(void)
 static void
 close_session()
 {
-#ifdef ENABLE_FASTQUIT
+	evt_generic(EVT_RACOON_QUIT, NULL);
+	pfkey_send_flush(lcconf->sock_pfkey, SADB_SATYPE_UNSPEC);
 	flushph2();
-#endif
 	flushph1();
+	flushrmconf();
+	flushsainfo();
 	close_sockets();
 	backupsa_clean();
 
-	plog(LLV_INFO, LOCATION, NULL, "racoon shutdown\n");
+	plog(LLV_INFO, LOCATION, NULL, "racoon process %d shutdown\n", getpid());
+
 	exit(0);
-}
-
-static void
-check_rtsock(unused)
-	void *unused;
-{
-	isakmp_close();
-	grab_myaddrs();
-	autoconf_myaddrsport();
-	isakmp_open();
-
-	/* initialize socket list again */
-	initfds();
-}
-
-static void
-initfds()
-{
-	struct myaddrs *p;
-
-	nfds = 0;
-
-	FD_ZERO(&mask0);
-	FD_ZERO(&maskdying);
-
-#ifdef ENABLE_ADMINPORT
-	if (lcconf->sock_admin != -1) {
-		if (lcconf->sock_admin >= FD_SETSIZE) {
-			plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-			exit(1);
-		}
-		FD_SET(lcconf->sock_admin, &mask0);
-		/* XXX should we listen on admin socket when dying ?
-		 */
-#if 0
-		FD_SET(lcconf->sock_admin, &maskdying);
-#endif
-		nfds = (nfds > lcconf->sock_admin ? nfds : lcconf->sock_admin);
-	}
-#endif
-	if (lcconf->sock_pfkey >= FD_SETSIZE) {
-		plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-		exit(1);
-	}
-	FD_SET(lcconf->sock_pfkey, &mask0);
-	FD_SET(lcconf->sock_pfkey, &maskdying);
-	nfds = (nfds > lcconf->sock_pfkey ? nfds : lcconf->sock_pfkey);
-	if (lcconf->rtsock >= 0) {
-		if (lcconf->rtsock >= FD_SETSIZE) {
-			plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-			exit(1);
-		}
-		FD_SET(lcconf->rtsock, &mask0);
-		nfds = (nfds > lcconf->rtsock ? nfds : lcconf->rtsock);
-	}
-
-	for (p = lcconf->myaddrs; p; p = p->next) {
-		if (!p->addr)
-			continue;
-		if (p->sock >= FD_SETSIZE) {
-			plog(LLV_ERROR, LOCATION, NULL, "fd_set overrun\n");
-			exit(1);
-		}
-		FD_SET(p->sock, &mask0);
-		nfds = (nfds > p->sock ? nfds : p->sock);
-	}
-	nfds++;
 }
 
 static int signals[] = {
@@ -331,10 +371,7 @@ RETSIGTYPE
 signal_handler(sig)
 	int sig;
 {
-	/* Do not just set it to 1, because we may miss some signals by just setting
-	 * values to 0/1
-	 */
-	sigreq[sig]++;
+	sigreq[sig] = 1;
 }
 
 
@@ -345,27 +382,28 @@ static void reload_conf(){
 
 #ifdef ENABLE_HYBRID
 	if ((isakmp_cfg_init(ISAKMP_CFG_INIT_WARM)) != 0) {
-		plog(LLV_ERROR, LOCATION, NULL, 
+		plog(LLV_ERROR, LOCATION, NULL,
 		    "ISAKMP mode config structure reset failed, "
 		    "not reloading\n");
 		return;
 	}
 #endif
 
-	save_sainfotree();
+	sainfo_start_reload();
 
 	/* TODO: save / restore / flush old lcconf (?) / rmtree
 	 */
-/*	initlcconf();*/ /* racoon_conf ? ! */
+	rmconf_start_reload();
 
-	save_rmconf();
-	initrmconf();
+#ifdef HAVE_LIBRADIUS
+	/* free and init radius configuration */
+	xauth_radius_init_conf(1);
+#endif
 
-	/* Do a part of pfkey_init() ?
-	 * SPD reload ?
-	 */
-	
+	pfkey_reload();
+
 	save_params();
+	flushlcconf();
 	error = cfparse();
 	if (error != 0){
 		plog(LLV_ERROR, LOCATION, NULL, "config reload failed\n");
@@ -374,19 +412,17 @@ static void reload_conf(){
 	}
 	restore_params();
 
-#if 0	
+#if 0
 	if (dump_config)
 		dumprmconf ();
 #endif
 
-	/* 
-	 * init_myaddr() ?
-	 * If running in privilege separation, do not reinitialize
-	 * the IKE listener, as we will not have the right to 
-	 * setsockopt(IP_IPSEC_POLICY). 
-	 */
-	if (geteuid() == 0)
-		check_rtsock(NULL);
+	myaddr_sync();
+
+#ifdef HAVE_LIBRADIUS
+	/* re-initialize radius state */
+	xauth_radius_init();
+#endif
 
 	/* Revalidate ph1 / ph2tree !!!
 	 * update ctdtree if removing some ph1 !
@@ -395,44 +431,33 @@ static void reload_conf(){
 	/* Update ctdtree ?
 	 */
 
-	save_sainfotree_flush();
-	save_rmconf_flush();
+	sainfo_finish_reload();
+	rmconf_finish_reload();
 }
 
 static void
 check_sigreq()
 {
-	int sig;
+	int sig, s;
 
-	/* 
-	 * XXX We are not able to tell if we got 
-	 * several time the same signal. This is
-	 * not a problem for the current code, 
-	 * but we shall remember this limitation.
-	 */
 	for (sig = 0; sig <= NSIG; sig++) {
 		if (sigreq[sig] == 0)
 			continue;
+		sigreq[sig] = 0;
 
-		sigreq[sig]--;
 		switch(sig) {
 		case 0:
 			return;
-			
-			/* Catch up childs, mainly scripts.
-			 */
+
 		case SIGCHLD:
-	    {
-			pid_t pid;
-			int s;
-			
-			pid = wait(&s);
-	    }
-		break;
+			/* Reap all pending children */
+			while (waitpid(-1, &s, WNOHANG) > 0)
+				;
+			break;
 
 #ifdef DEBUG_RECORD_MALLOCATION
-		/* 
-		 * XXX This operation is signal handler unsafe and may lead to 
+		/*
+		 * XXX This operation is signal handler unsafe and may lead to
 		 * crashes and security breaches: See Henning Brauer talk at
 		 * EuroBSDCon 2005. Do not run in production with this option
 		 * enabled.
@@ -448,107 +473,30 @@ check_sigreq()
 			break;
 
 		case SIGINT:
-		case SIGTERM:			
-			plog(LLV_INFO, LOCATION, NULL, 
+		case SIGTERM:
+			plog(LLV_INFO, LOCATION, NULL,
 			    "caught signal %d\n", sig);
-			EVT_PUSH(NULL, NULL, EVTT_RACOON_QUIT, NULL);
-			pfkey_send_flush(lcconf->sock_pfkey, 
-			    SADB_SATYPE_UNSPEC);
-#ifdef ENABLE_FASTQUIT
 			close_session();
-#else
-			sched_new(1, check_flushsa_stub, NULL);
-#endif
-			dying = 1;
 			break;
 
 		default:
-			plog(LLV_INFO, LOCATION, NULL, 
+			plog(LLV_INFO, LOCATION, NULL,
 			    "caught signal %d\n", sig);
 			break;
 		}
 	}
-}
-
-/*
- * waiting the termination of processing until sending DELETE message
- * for all inbound SA will complete.
- */
-static void
-check_flushsa_stub(p)
-	void *p;
-{
-
-	check_flushsa();
-}
-
-static void
-check_flushsa()
-{
-	vchar_t *buf;
-	struct sadb_msg *msg, *end, *next;
-	struct sadb_sa *sa;
-	caddr_t mhp[SADB_EXT_MAX + 1];
-	int n;
-
-	buf = pfkey_dump_sadb(SADB_SATYPE_UNSPEC);
-	if (buf == NULL) {
-		plog(LLV_DEBUG, LOCATION, NULL,
-		    "pfkey_dump_sadb: returned nothing.\n");
-		return;
-	}
-
-	msg = (struct sadb_msg *)buf->v;
-	end = (struct sadb_msg *)(buf->v + buf->l);
-
-	/* counting SA except of dead one. */
-	n = 0;
-	while (msg < end) {
-		if (PFKEY_UNUNIT64(msg->sadb_msg_len) < sizeof(*msg))
-			break;
-		next = (struct sadb_msg *)((caddr_t)msg + PFKEY_UNUNIT64(msg->sadb_msg_len));
-		if (msg->sadb_msg_type != SADB_DUMP) {
-			msg = next;
-			continue;
-		}
-
-		if (pfkey_align(msg, mhp) || pfkey_check(mhp)) {
-			plog(LLV_ERROR, LOCATION, NULL,
-				"pfkey_check (%s)\n", ipsec_strerror());
-			msg = next;
-			continue;
-		}
-
-		sa = (struct sadb_sa *)(mhp[SADB_EXT_SA]);
-		if (!sa) {
-			msg = next;
-			continue;
-		}
-
-		if (sa->sadb_sa_state != SADB_SASTATE_DEAD) {
-			n++;
-			msg = next;
-			continue;
-		}
-
-		msg = next;
-	}
-
-	if (buf != NULL)
-		vfree(buf);
-
-	if (n) {
-		sched_new(1, check_flushsa_stub, NULL);
-		return;
-	}
-
-	close_session();
 }
 
 static void
 init_signal()
 {
 	int i;
+
+	/*
+	 * Ignore SIGPIPE as we check the return value of system calls
+	 * that write to pipe-like fds.
+	 */
+	signal(SIGPIPE, SIG_IGN);
 
 	for (i = 0; signals[i] != 0; i++)
 		if (set_signal(signals[i], signal_handler) < 0) {
@@ -582,7 +530,7 @@ set_signal(sig, func)
 static int
 close_sockets()
 {
-	isakmp_close();
+	myaddr_close();
 	pfkey_close(lcconf->sock_pfkey);
 #ifdef ENABLE_ADMINPORT
 	(void)admin_close();

@@ -1,9 +1,10 @@
-/*	$NetBSD: schedule.c,v 1.4 2006/09/09 16:22:10 manu Exp $	*/
+/*	$NetBSD: schedule.c,v 1.7 2009/01/23 09:10:13 tteras Exp $	*/
 
 /*	$KAME: schedule.c,v 1.19 2001/11/05 10:53:19 sakane Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
+ * Copyright (C) 2008 Timo Teras.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -40,6 +41,7 @@
 #include <sys/socket.h>
 
 #include <stdlib.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -51,25 +53,46 @@
 #include "var.h"
 #include "gcmalloc.h"
 
-#define FIXY2038PROBLEM
-
 #ifndef TAILQ_FOREACH
 #define TAILQ_FOREACH(elm, head, field) \
         for (elm = TAILQ_FIRST(head); elm; elm = TAILQ_NEXT(elm, field))
 #endif
 
-static struct timeval timeout;
-
-#ifdef FIXY2038PROBLEM
-#define Y2038TIME_T	0x7fffffff
-static time_t launched;		/* time when the program launched. */
-static time_t deltaY2038;
-#endif
-
 static TAILQ_HEAD(_schedtree, sched) sctree;
 
-static void sched_add __P((struct sched *));
-static time_t current_time __P((void));
+void
+sched_get_monotonic_time(tv)
+	struct timeval *tv;
+{
+#ifdef HAVE_CLOCK_MONOTONIC
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	tv->tv_sec = ts.tv_sec;
+	tv->tv_usec = ts.tv_nsec / 1000;
+#else
+	gettimeofday(tv, NULL);
+#endif
+}
+
+time_t
+sched_monotonic_to_time_t(tv, now)
+	struct timeval *tv, *now;
+{
+#ifdef HAVE_CLOCK_MONOTONIC
+	struct timeval mynow, res;
+
+	if (now == NULL) {
+		sched_get_monotonic_time(&mynow);
+		now = &mynow;
+	}
+	timersub(now, tv, &res);
+
+	return time(NULL) + res.tv_sec;
+#else
+	return tv->tv_sec;
+#endif
+}
 
 /*
  * schedule handler
@@ -80,42 +103,26 @@ static time_t current_time __P((void));
 struct timeval *
 schedular()
 {
-	time_t now, delta;
-	struct sched *p, *next = NULL;
+	static struct timeval timeout;
+	struct timeval now;
+	struct sched *p;
 
-	now = current_time();
+	sched_get_monotonic_time(&now);
+	while (!TAILQ_EMPTY(&sctree) &&
+		timercmp(&TAILQ_FIRST(&sctree)->xtime, &now, <=)) {
+		void (*func)(struct sched *);
 
-        for (p = TAILQ_FIRST(&sctree); p; p = next) {
-		/* if the entry has been daed, remove it */
-		if (p->dead)
-			goto next_schedule;
-
-		/* if the time hasn't come, proceed to the next entry */
-		if (now < p->xtime) {
-			next = TAILQ_NEXT(p, chain);
-			continue;
-		}
-
-		/* mark it with dead. and call the function. */
-		p->dead = 1;
-		if (p->func != NULL)
-			(p->func)(p->param);
-
-	   next_schedule:
-		next = TAILQ_NEXT(p, chain);
-		TAILQ_REMOVE(&sctree, p, chain);
-		racoon_free(p);
+		p = TAILQ_FIRST(&sctree);
+		func = p->func;
+		sched_cancel(p);
+		func(p);
 	}
 
 	p = TAILQ_FIRST(&sctree);
 	if (p == NULL)
 		return NULL;
 
-	now = current_time();
-
-	delta = p->xtime - now;
-	timeout.tv_sec = delta < 0 ? 0 : delta;
-	timeout.tv_usec = 0;
+	timersub(&p->xtime, &now, &timeout);
 
 	return &timeout;
 }
@@ -123,101 +130,46 @@ schedular()
 /*
  * add new schedule to schedule table.
  */
-struct sched *
-sched_new(tick, func, param)
+void
+sched_schedule(sc, tick, func)
+	struct sched *sc;
 	time_t tick;
-	void (*func) __P((void *));
-	void *param;
+	void (*func) __P((struct sched *));
 {
 	static long id = 1;
-	struct sched *new;
+	struct sched *p;
+	struct timeval now;
 
-	new = (struct sched *)racoon_malloc(sizeof(*new));
-	if (new == NULL)
-		return NULL;
+	sched_cancel(sc);
 
-	memset(new, 0, sizeof(*new));
-	new->func = func;
-	new->param = param;
-
-	new->id = id++;
-	time(&new->created);
-	new->tick = tick;
-
-	new->xtime = current_time() + tick;
-	new->dead = 0;
+	sc->func = func;
+	sc->id = id++;
+	sc->tick.tv_sec = tick;
+	sc->tick.tv_usec = 0;
+	sched_get_monotonic_time(&now);
+	timeradd(&now, &sc->tick, &sc->xtime);
 
 	/* add to schedule table */
-	sched_add(new);
-
-	return(new);
-}
-
-/* add new schedule to schedule table */
-static void
-sched_add(sc)
-	struct sched *sc;
-{
-	struct sched *p;
-
 	TAILQ_FOREACH(p, &sctree, chain) {
-		if (sc->xtime < p->xtime) {
-			TAILQ_INSERT_BEFORE(p, sc, chain);
-			return;
-		}
+		if (timercmp(&sc->xtime, &p->xtime, <))
+			break;
 	}
 	if (p == NULL)
 		TAILQ_INSERT_TAIL(&sctree, sc, chain);
-
-	return;
+	else
+		TAILQ_INSERT_BEFORE(p, sc, chain);
 }
 
-/* get current time.
- * if defined FIXY2038PROBLEM, base time is the time when called sched_init().
- * Otherwise, conform to time(3).
+/*
+ * cancel scheduled callback
  */
-static time_t
-current_time()
-{
-	time_t n;
-#ifdef FIXY2038PROBLEM
-	time_t t;
-
-	time(&n);
-	t = n - launched;
-	if (t < 0)
-		t += deltaY2038;
-
-	return t;
-#else
-	return time(&n);
-#endif
-}
-
 void
-sched_kill(sc)
+sched_cancel(sc)
 	struct sched *sc;
 {
-	sc->dead = 1;
-
-	return;
-}
-
-/* XXX this function is probably unnecessary. */
-void
-sched_scrub_param(param)
-	void *param;
-{
-	struct sched *sc;
-
-	TAILQ_FOREACH(sc, &sctree, chain) {
-		if (sc->param == param) {
-			if (!sc->dead) {
-				plog(LLV_DEBUG, LOCATION, NULL,
-				    "an undead schedule has been deleted.\n");
-			}
-			sched_kill(sc);
-		}
+	if (sc->func != NULL) {
+		TAILQ_REMOVE(&sctree, sc, chain);
+		sc->func = NULL;
 	}
 }
 
@@ -232,6 +184,7 @@ sched_dump(buf, len)
 	caddr_t new;
 	struct sched *p;
 	struct scheddump *dst;
+	struct timeval now, created;
 	int cnt = 0;
 
 	/* initialize */
@@ -252,12 +205,14 @@ sched_dump(buf, len)
 		return -1;
 	dst = (struct scheddump *)new;
 
-        p = TAILQ_FIRST(&sctree);
+	sched_get_monotonic_time(&now);
+	p = TAILQ_FIRST(&sctree);
 	while (p) {
-		dst->xtime = p->xtime;
+		timersub(&p->xtime, &p->tick, &created);
+		dst->xtime = p->xtime.tv_sec;
 		dst->id = p->id;
-		dst->created = p->created;
-		dst->tick = p->tick;
+		dst->created = sched_monotonic_to_time_t(&created, &now);
+		dst->tick = p->tick.tv_sec;
 
 		p = TAILQ_NEXT(p, chain);
 		if (p == NULL)
@@ -274,15 +229,7 @@ sched_dump(buf, len)
 void
 sched_init()
 {
-#ifdef FIXY2038PROBLEM
-	time(&launched);
-
-	deltaY2038 = Y2038TIME_T - launched;
-#endif
-
 	TAILQ_INIT(&sctree);
-
-	return;
 }
 
 #ifdef STEST

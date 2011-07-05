@@ -1,4 +1,4 @@
-/*	$NetBSD: cftoken.l,v 1.11.4.2 2007/09/03 18:07:29 mgrooms Exp $	*/
+/*	$NetBSD: cftoken.l,v 1.23 2011/02/02 15:21:34 vanhu Exp $	*/
 
 /* Id: cftoken.l,v 1.53 2006/08/22 18:17:17 manubsd Exp */
 
@@ -132,7 +132,7 @@ addrstring	[a-fA-F0-9:]([a-fA-F0-9:\.]*|[a-fA-F0-9:\.]*%[a-zA-Z0-9]*)
 decstring	{digit}+
 hexstring	0x{hexdigit}+
 
-%s S_INI S_PRIV S_PTH S_INF S_LOG S_PAD S_LST S_RTRY S_CFG S_LDAP
+%s S_INI S_PRIV S_PTH S_LOG S_PAD S_LST S_RTRY S_CFG S_LDAP S_RAD
 %s S_ALGST S_ALGCL
 %s S_SAINF S_SAINFS
 %s S_RMT S_RMTS S_RMTP
@@ -174,9 +174,8 @@ hexstring	0x{hexdigit}+
 	/* include */
 <S_INI>include		{ YYDB; return(INCLUDE); }
 
-	/* self information */
-<S_INI>identifier	{ BEGIN S_INF; YYDB; yywarn("it is obsoleted.  use \"my_identifier\" in each remote directives."); return(IDENTIFIER); }
-<S_INF>{semi}		{ BEGIN S_INI; return(EOS); }
+    /* pfkey_buffer */
+<S_INI>pfkey_buffer { YYDB; return(PFKEY_BUFFER); }
 
 	/* special */
 <S_INI>complex_bundle	{ YYDB; return(COMPLEX_BUNDLE); }
@@ -189,8 +188,6 @@ hexstring	0x{hexdigit}+
 <S_LOG>info		{ YYD; yylval.num = LLV_INFO; return(LOGLEV); }
 <S_LOG>debug		{ YYD; yylval.num = LLV_DEBUG; return(LOGLEV); }
 <S_LOG>debug2		{ YYD; yylval.num = LLV_DEBUG2; return(LOGLEV); }
-<S_LOG>debug3		{ YYD; yywarn("it is obsoleted.  use \"debug2\""); yylval.num = LLV_DEBUG2; return(LOGLEV); }
-<S_LOG>debug4		{ YYD; yywarn("it is obsoleted.  use \"debug2\""); yylval.num = LLV_DEBUG2; return(LOGLEV); }
 <S_LOG>{semi}		{ BEGIN S_INI; return(EOS); }
 
 	/* padding */
@@ -213,6 +210,15 @@ hexstring	0x{hexdigit}+
 <S_LST>disabled		{ YYD; return(DISABLED); }
 <S_LST>strict_address	{ YYD; return(STRICT_ADDRESS); }
 <S_LST>{ecl}		{ BEGIN S_INI; return(EOC); }
+
+	/* radius config */
+<S_INI>radiuscfg	{ BEGIN S_RAD; YYDB; return(RADCFG); }
+<S_RAD>{bcl}		{ return(BOC); }
+<S_RAD>auth		{ YYD; return(RAD_AUTH); }
+<S_RAD>acct		{ YYD; return(RAD_ACCT); }
+<S_RAD>timeout		{ YYD; return(RAD_TIMEOUT); }
+<S_RAD>retries		{ YYD; return(RAD_RETRIES); }
+<S_RAD>{ecl}		{ BEGIN S_INI; return(EOC); }
 
 	/* ldap config */
 <S_INI>ldapcfg		{ BEGIN S_LDAP; YYDB; return(LDAPCFG); }
@@ -277,6 +283,7 @@ hexstring	0x{hexdigit}+
 	/* sainfo */
 <S_INI>sainfo		{ BEGIN S_SAINF; YYDB; return(SAINFO); }
 <S_SAINF>anonymous	{ YYD; return(ANONYMOUS); }
+<S_SAINF>clientaddr	{ YYD; return(CLIENTADDR); }
 <S_SAINF>{blcl}any{elcl}	{ YYD; return(PORTANY); }
 <S_SAINF>any		{ YYD; return(ANY); }
 <S_SAINF>from		{ YYD; return(FROM); }
@@ -287,7 +294,6 @@ hexstring	0x{hexdigit}+
 <S_SAINFS>{ecl}		{ BEGIN S_INI; return(EOC); }
 <S_SAINFS>pfs_group	{ YYD; return(PFS_GROUP); }
 <S_SAINFS>remoteid	{ YYD; return(REMOTEID); }
-<S_SAINFS>identifier	{ YYD; yywarn("it is obsoleted.  use \"my_identifier\"."); return(IDENTIFIER); }
 <S_SAINFS>my_identifier	{ YYD; return(MY_IDENTIFIER); }
 <S_SAINFS>lifetime	{ YYD; return(LIFETIME); }
 <S_SAINFS>time		{ YYD; return(LIFETYPE_TIME); }
@@ -304,6 +310,7 @@ hexstring	0x{hexdigit}+
 	/* remote spec */
 <S_RMT>{bcl}		{ BEGIN S_RMTS; return(BOC); }
 <S_RMTS>{ecl}		{ BEGIN S_INI; return(EOC); }
+<S_RMTS>remote_address	{ YYD; return(REMOTE_ADDRESS); }
 <S_RMTS>exchange_mode	{ YYD; return(EXCHANGE_MODE); }
 <S_RMTS>{comma}		{ YYD; /* XXX ignored, but to be handled. */ ; }
 <S_RMTS>base		{ YYD; yylval.num = ISAKMP_ETYPE_BASE; return(EXCHANGETYPE); }
@@ -315,7 +322,6 @@ hexstring	0x{hexdigit}+
 <S_RMTS>identity_only	{ YYD; yylval.num = IPSECDOI_SIT_IDENTITY_ONLY; return(SITUATIONTYPE); }
 <S_RMTS>secrecy		{ YYD; yylval.num = IPSECDOI_SIT_SECRECY; return(SITUATIONTYPE); }
 <S_RMTS>integrity	{ YYD; yylval.num = IPSECDOI_SIT_INTEGRITY; return(SITUATIONTYPE); }
-<S_RMTS>identifier	{ YYD; yywarn("it is obsoleted.  use \"my_identifier\"."); return(IDENTIFIER); }
 <S_RMTS>my_identifier	{ YYD; return(MY_IDENTIFIER); }
 <S_RMTS>xauth_login	{ YYD; return(XAUTH_LOGIN); /* formerly identifier type login */ }
 <S_RMTS>peers_identifier	{ YYD; return(PEERS_IDENTIFIER); }
@@ -329,12 +335,12 @@ hexstring	0x{hexdigit}+
 <S_RMTS>verify_cert	{ YYD; return(VERIFY_CERT); }
 <S_RMTS>send_cert	{ YYD; return(SEND_CERT); }
 <S_RMTS>send_cr		{ YYD; return(SEND_CR); }
+<S_RMTS>match_empty_cr	{ YYD; return(MATCH_EMPTY_CR); }
 <S_RMTS>dh_group	{ YYD; return(DH_GROUP); }
 <S_RMTS>nonce_size	{ YYD; return(NONCE_SIZE); }
 <S_RMTS>generate_policy	{ YYD; return(GENERATE_POLICY); }
 <S_RMTS>unique		{ YYD; yylval.num = GENERATE_POLICY_UNIQUE; return(GENERATE_LEVEL); }
 <S_RMTS>require		{ YYD; yylval.num = GENERATE_POLICY_REQUIRE; return(GENERATE_LEVEL); }
-<S_RMTS>support_mip6	{ YYD; yywarn("it is obsoleted.  use \"support_proxy\"."); return(SUPPORT_PROXY); }
 <S_RMTS>support_proxy	{ YYD; return(SUPPORT_PROXY); }
 <S_RMTS>initial_contact	{ YYD; return(INITIAL_CONTACT); }
 <S_RMTS>nat_traversal	{ YYD; return(NAT_TRAVERSAL); }
@@ -359,8 +365,10 @@ hexstring	0x{hexdigit}+
 <S_RMTS>script		{ YYD; return(SCRIPT); }
 <S_RMTS>phase1_up	{ YYD; return(PHASE1_UP); }
 <S_RMTS>phase1_down	{ YYD; return(PHASE1_DOWN); }
+<S_RMTS>phase1_dead	{ YYD; return(PHASE1_DEAD); }
 <S_RMTS>mode_cfg	{ YYD; return(MODE_CFG); }
 <S_RMTS>weak_phase1_check { YYD; return(WEAK_PHASE1_CHECK); }
+<S_RMTS>rekey		{ YYD; return(REKEY); }
 	/* remote proposal */
 <S_RMTS>proposal	{ BEGIN S_RMTP; YYDB; return(PROPOSAL); }
 <S_RMTP>{bcl}		{ return(BOC); }
@@ -427,6 +435,7 @@ icmp		{ YYD; yylval.num = IPPROTO_ICMP; return(UL_PROTO); }
 icmp6		{ YYD; yylval.num = IPPROTO_ICMPV6; return(UL_PROTO); }
 tcp		{ YYD; yylval.num = IPPROTO_TCP; return(UL_PROTO); }
 udp		{ YYD; yylval.num = IPPROTO_UDP; return(UL_PROTO); }
+gre		{ YYD; yylval.num = IPPROTO_GRE; return(UL_PROTO); }
 
 	/* algorithm type */
 des_iv64	{ YYD; yylval.num = algtype_des_iv64;	return(ALGORITHMTYPE); }
@@ -543,14 +552,12 @@ xauth_rsa_client {
 
 
 	/* identifier type */
-vendor_id	{ YYD; yywarn("it is obsoleted."); return(VENDORID); }
 user_fqdn	{ YYD; yylval.num = IDTYPE_USERFQDN; return(IDENTIFIERTYPE); }
 fqdn		{ YYD; yylval.num = IDTYPE_FQDN; return(IDENTIFIERTYPE); }
 keyid		{ YYD; yylval.num = IDTYPE_KEYID; return(IDENTIFIERTYPE); }
 address		{ YYD; yylval.num = IDTYPE_ADDRESS; return(IDENTIFIERTYPE); }
 subnet		{ YYD; yylval.num = IDTYPE_SUBNET; return(IDENTIFIERTYPE); }
 asn1dn		{ YYD; yylval.num = IDTYPE_ASN1DN; return(IDENTIFIERTYPE); }
-certname	{ YYD; yywarn("certname will be obsoleted in near future."); yylval.num = IDTYPE_ASN1DN; return(IDENTIFIERTYPE); }
 
 	/* identifier qualifier */
 tag		{ YYD; yylval.num = IDQUAL_TAG;  return(IDENTIFIERQUAL); }
@@ -573,7 +580,7 @@ no		{ YYD; yylval.num = FALSE; return(BOOLEAN); }
 			char *bp;
 
 			YYD;
-			yylval.num = strtol(yytext, &bp, 10);
+			yylval.num = strtoul(yytext, &bp, 10);
 			return(NUMBER);
 		}
 
@@ -631,6 +638,10 @@ no		{ YYD; yylval.num = FALSE; return(BOOLEAN); }
 
 <<EOF>>		{
 			yy_delete_buffer(YY_CURRENT_BUFFER);
+			fclose (incstack[incstackp].fp);
+			incstack[incstackp].fp = NULL;
+			racoon_free(incstack[incstackp].path);
+			incstack[incstackp].path = NULL;
 			incstackp--;
     nextfile:
 			if (incstack[incstackp].matchon <

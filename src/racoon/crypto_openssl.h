@@ -1,4 +1,4 @@
-/*	$NetBSD: crypto_openssl.h,v 1.5 2006/10/06 12:02:27 manu Exp $	*/
+/*	$NetBSD: crypto_openssl.h,v 1.7 2009/08/17 11:59:10 vanhu Exp $	*/
 
 /* Id: crypto_openssl.h,v 1.11 2004/11/13 11:28:01 manubsd Exp */
 
@@ -34,8 +34,6 @@
 #ifndef _CRYPTO_OPENSSL_H
 #define _CRYPTO_OPENSSL_H
 
-#include "crypto_openssl.h"
-
 #include <openssl/x509v3.h>
 #include <openssl/rsa.h>
 
@@ -55,6 +53,7 @@ extern int eay_cmp_asn1dn __P((vchar_t *, vchar_t *));
 extern int eay_check_x509cert __P((vchar_t *, char *, char *, int));
 extern vchar_t *eay_get_x509asn1subjectname __P((vchar_t *));
 extern int eay_get_x509subjectaltname __P((vchar_t *, char **, int *, int));
+extern vchar_t * eay_get_x509asn1issuername __P((vchar_t *));
 extern char *eay_get_x509text __P((vchar_t *));
 extern vchar_t *eay_get_x509cert __P((char *));
 extern vchar_t *eay_get_x509sign __P((vchar_t *, vchar_t *));

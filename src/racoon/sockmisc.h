@@ -1,4 +1,4 @@
-/*	$NetBSD: sockmisc.h,v 1.7 2006/09/09 16:22:10 manu Exp $	*/
+/*	$NetBSD: sockmisc.h,v 1.13 2011/03/14 17:18:13 tteras Exp $	*/
 
 /* Id: sockmisc.h,v 1.9 2005/10/05 16:55:41 manubsd Exp */
 
@@ -34,26 +34,34 @@
 #ifndef _SOCKMISC_H
 #define _SOCKMISC_H
 
+#ifndef IP_IPSEC_POLICY
+#define IP_IPSEC_POLICY 16	/* XXX: from linux/in.h */
+#endif
+
+#ifndef IPV6_IPSEC_POLICY
+#define IPV6_IPSEC_POLICY 34	/* XXX: from linux/???.h per
+				   "Tom Lendacky" <toml@us.ibm.com> */
+#endif
+
+union sockaddr_any {
+	struct sockaddr sa;
+	struct sockaddr_in sin;
+	struct sockaddr_in6 sin6;
+};
+
 struct netaddr {
-	union {
-		struct sockaddr sa;
-		struct sockaddr_in sin;
-		struct sockaddr_in6 sin6;
-	} sa;
+	union sockaddr_any sa;
 	unsigned long prefix;
 };
 
 extern const int niflags;
 
-extern int cmpsaddrwop __P((const struct sockaddr *, const struct sockaddr *));
-extern int cmpsaddrwild __P((const struct sockaddr *, const struct sockaddr *));
-extern int cmpsaddrstrict __P((const struct sockaddr *, const struct sockaddr *));
+#define CMPSADDR_MATCH		0
+#define CMPSADDR_WILDPORT_MATCH	1
+#define CMPSADDR_WOP_MATCH	2
+#define CMPSADDR_MISMATCH	3
 
-#ifdef ENABLE_NATT 
-#define CMPSADDR(saddr1, saddr2) cmpsaddrstrict((saddr1), (saddr2))
-#else 
-#define CMPSADDR(saddr1, saddr2) cmpsaddrwop((saddr1), (saddr2))
-#endif
+extern int cmpsaddr __P((const struct sockaddr *, const struct sockaddr *));
 
 extern struct sockaddr *getlocaladdr __P((struct sockaddr *));
 
@@ -81,7 +89,7 @@ extern char *naddrwop2str_fromto __P((const char *format, const struct netaddr *
 				      const struct netaddr *daddr));
 extern int naddr_score(const struct netaddr *naddr, const struct sockaddr *saddr);
 
-/* Some usefull functions for sockaddr port manipulations. */
+/* Some useful functions for sockaddr port manipulations. */
 extern u_int16_t extract_port __P((const struct sockaddr *addr));
 extern u_int16_t *set_port __P((struct sockaddr *addr, u_int16_t new_port));
 extern u_int16_t *get_port_ptr __P((struct sockaddr *addr));

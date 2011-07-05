@@ -1,11 +1,11 @@
-/*	$NetBSD: remoteconf.c,v 1.9.4.2 2008/06/18 07:30:19 mgrooms Exp $	*/
+/*	$NetBSD: remoteconf.c,v 1.26 2011/03/14 15:50:36 vanhu Exp $	*/
 
 /* Id: remoteconf.c,v 1.38 2006/05/06 15:52:44 manubsd Exp */
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -17,7 +17,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -63,6 +63,7 @@
 #endif
 #include "isakmp.h"
 #include "ipsec_doi.h"
+#include "crypto_openssl.h"
 #include "oakley.h"
 #include "remoteconf.h"
 #include "localconf.h"
@@ -75,16 +76,307 @@
 #include "algorithm.h"
 #include "nattraversal.h"
 #include "isakmp_frag.h"
+#include "handler.h"
 #include "genlist.h"
+#include "rsalist.h"
 
-static TAILQ_HEAD(_rmtree, remoteconf) rmtree, rmtree_save, rmtree_tmp;
+typedef TAILQ_HEAD(_rmtree, remoteconf) remoteconf_tailq_head_t;
+static remoteconf_tailq_head_t rmtree, rmtree_save;
 
-/* 
+/*
  * Script hook names and script hook paths
  */
-char *script_names[SCRIPT_MAX + 1] = { "phase1_up", "phase1_down" };
+char *script_names[SCRIPT_MAX + 1] = {
+	"phase1_up", "phase1_down", "phase1_dead" };
 
 /*%%%*/
+
+int
+rmconf_match_identity(rmconf, id_p)
+	struct remoteconf *rmconf;
+	vchar_t *id_p;
+{
+	struct ipsecdoi_id_b *id_b = (struct ipsecdoi_id_b *) id_p->v;
+	struct sockaddr *sa;
+	caddr_t sa1, sa2;
+	vchar_t ident;
+	struct idspec *id;
+	struct genlist_entry *gpb;
+
+	/* compare with the ID if specified. */
+	if (!genlist_next(rmconf->idvl_p, 0))
+		return 0;
+
+	for (id = genlist_next(rmconf->idvl_p, &gpb); id; id = genlist_next(0, &gpb)) {
+		/* No ID specified in configuration, so it is ok */
+		if (id->id == 0)
+			return 0;
+
+		/* check the type of both IDs */
+		if (id->idtype != doi2idtype(id_b->type))
+			continue;  /* ID type mismatch */
+
+		/* compare defined ID with the ID sent by peer. */
+		switch (id->idtype) {
+		case IDTYPE_ASN1DN:
+			ident.v = id_p->v + sizeof(*id_b);
+			ident.l = id_p->l - sizeof(*id_b);
+			if (eay_cmp_asn1dn(id->id, &ident) == 0)
+				return 0;
+			break;
+		case IDTYPE_ADDRESS:
+			sa = (struct sockaddr *)id->id->v;
+			sa2 = (caddr_t)(id_b + 1);
+			switch (sa->sa_family) {
+			case AF_INET:
+				if (id_p->l - sizeof(*id_b) != sizeof(struct in_addr))
+					continue;  /* ID value mismatch */
+				sa1 = (caddr_t) &((struct sockaddr_in *)sa)->sin_addr;
+				if (memcmp(sa1, sa2, sizeof(struct in_addr)) == 0)
+					return 0;
+				break;
+#ifdef INET6
+			case AF_INET6:
+				if (id_p->l - sizeof(*id_b) != sizeof(struct in6_addr))
+					continue;  /* ID value mismatch */
+				sa1 = (caddr_t) &((struct sockaddr_in6 *)sa)->sin6_addr;
+				if (memcmp(sa1, sa2, sizeof(struct in6_addr)) == 0)
+					return 0;
+				break;
+#endif
+			default:
+				break;
+			}
+			break;
+		default:
+			if (memcmp(id->id->v, id_b + 1, id->id->l) == 0)
+				return 0;
+			break;
+		}
+	}
+
+	plog(LLV_WARNING, LOCATION, NULL, "No ID match.\n");
+	if (rmconf->verify_identifier)
+		return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
+
+	return 0;
+}
+
+static int
+rmconf_match_etype_and_approval(rmconf, etype, approval)
+	struct remoteconf *rmconf;
+	int etype;
+	struct isakmpsa *approval;
+{
+	struct isakmpsa *p;
+
+	if (check_etypeok(rmconf, (void *) (intptr_t) etype) == 0)
+		return ISAKMP_NTYPE_NO_PROPOSAL_CHOSEN;
+
+	if (approval == NULL)
+		return 0;
+
+	if (etype == ISAKMP_ETYPE_AGG &&
+	    approval->dh_group != rmconf->dh_group)
+		return ISAKMP_NTYPE_NO_PROPOSAL_CHOSEN;
+
+	if (checkisakmpsa(rmconf->pcheck_level, approval,
+			  rmconf->proposal) == NULL)
+		return ISAKMP_NTYPE_NO_PROPOSAL_CHOSEN;
+
+	return 0;
+}
+
+enum rmconf_match_t {
+	MATCH_NONE		= 0,
+	MATCH_BASIC		= 0x0000001,
+	MATCH_ADDRESS		= 0x0000002,
+	MATCH_SA		= 0x0000004,
+	MATCH_IDENTITY		= 0x0000008,
+	MATCH_AUTH_IDENTITY	= 0x0000010,
+};
+
+static int
+rmconf_match_type(rmsel, rmconf)
+	struct rmconfselector *rmsel;
+	struct remoteconf *rmconf;
+{
+	int ret = MATCH_NONE, tmp;
+
+	/* No match at all: unwanted anonymous */
+	if ((rmsel->flags & GETRMCONF_F_NO_ANONYMOUS) &&
+	    rmconf->remote->sa_family == AF_UNSPEC){
+		plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+		     "Not matched: Anonymous conf.\n");
+		return MATCH_NONE;
+	}
+
+	if ((rmsel->flags & GETRMCONF_F_NO_PASSIVE) && rmconf->passive){
+		plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+		     "Not matched: passive conf.\n");
+		return MATCH_NONE;
+	}
+
+	ret |= MATCH_BASIC;
+
+	/* Check address */
+	if (rmsel->remote != NULL) {
+		if (rmconf->remote->sa_family != AF_UNSPEC) {
+			if (cmpsaddr(rmsel->remote, rmconf->remote) == CMPSADDR_MISMATCH){
+				plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+				     "Not matched: address mismatch.\n");
+				return MATCH_NONE;
+			}
+
+			/* Address matched */
+			ret |= MATCH_ADDRESS;
+		}
+	}
+
+	/* Check etype and approval */
+	if (rmsel->etype != ISAKMP_ETYPE_NONE) {
+		tmp=rmconf_match_etype_and_approval(rmconf, rmsel->etype,
+						    rmsel->approval);
+		if (tmp != 0){
+			plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+			     "Not matched: etype (%d)/approval mismatch (%d).\n", rmsel->etype, tmp);
+			return MATCH_NONE;
+		}
+		ret |= MATCH_SA;
+	}
+
+	/* Check identity */
+	if (rmsel->identity != NULL && rmconf->verify_identifier) {
+		if (rmconf_match_identity(rmconf, rmsel->identity) != 0){
+			plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+			     "Not matched: identity mismatch.\n");
+			return MATCH_NONE;
+		}
+		ret |= MATCH_IDENTITY;
+	}
+
+	/* Check certificate request */
+	if (rmsel->certificate_request != NULL) {
+		if (oakley_get_certtype(rmsel->certificate_request) !=
+		    oakley_get_certtype(rmconf->mycert)){
+			plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+			     "Not matched: cert type mismatch.\n");
+			return MATCH_NONE;
+		}
+
+		if (rmsel->certificate_request->l > 1) {
+			vchar_t *issuer;
+
+			issuer = eay_get_x509asn1issuername(rmconf->mycert);
+			if (rmsel->certificate_request->l - 1 != issuer->l ||
+			    memcmp(rmsel->certificate_request->v + 1,
+				   issuer->v, issuer->l) != 0) {
+				vfree(issuer);
+				plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+				     "Not matched: cert issuer mismatch.\n");
+				return MATCH_NONE;
+			}
+			vfree(issuer);
+		} else {
+			if (!rmconf->match_empty_cr){
+				plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+				     "Not matched: empty certificate request.\n");
+				return MATCH_NONE;
+			}
+		}
+
+		ret |= MATCH_AUTH_IDENTITY;
+	}
+
+	return ret;
+}
+
+void rmconf_selector_from_ph1(rmsel, iph1)
+	struct rmconfselector *rmsel;
+	struct ph1handle *iph1;
+{
+	memset(rmsel, 0, sizeof(*rmsel));
+	rmsel->flags = 0;
+	rmsel->remote = iph1->remote;
+	rmsel->etype = iph1->etype;
+	rmsel->approval = iph1->approval;
+	rmsel->identity = iph1->id_p;
+	rmsel->certificate_request = iph1->cr_p;
+}
+
+int
+enumrmconf(rmsel, enum_func, enum_arg)
+	struct rmconfselector *rmsel;
+	int (* enum_func)(struct remoteconf *rmconf, void *arg);
+	void *enum_arg;
+{
+	struct remoteconf *p;
+	int ret = 0;
+
+	RACOON_TAILQ_FOREACH_REVERSE(p, &rmtree, _rmtree, chain) {
+		plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+		     "Checking remote conf \"%s\" %s.\n", p->name,
+		     p->remote->sa_family == AF_UNSPEC ?
+		     "anonymous" : saddr2str(p->remote));
+
+		if (rmsel != NULL) {
+			if (rmconf_match_type(rmsel, p) == MATCH_NONE){
+				plog(LLV_DEBUG2, LOCATION, rmsel->remote,
+				     "Not matched.\n");
+				continue;
+			}
+		}
+
+		plog(LLV_DEBUG2, LOCATION, NULL,
+		     "enumrmconf: \"%s\" matches.\n", p->name);
+
+		ret = (*enum_func)(p, enum_arg);
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+
+struct rmconf_find_context {
+	struct rmconfselector sel;
+
+	struct remoteconf *rmconf;
+	int match_type;
+	int num_found;
+};
+
+static int
+rmconf_find(rmconf, ctx)
+	struct remoteconf *rmconf;
+	void *ctx;
+{
+	struct rmconf_find_context *fctx = (struct rmconf_find_context *) ctx;
+	int match_type;
+
+	/* First matching remote conf? */
+	match_type = rmconf_match_type(&fctx->sel, rmconf);
+
+	if (fctx->rmconf != NULL) {
+		/* More ambiguous matches are ignored. */
+		if (match_type < fctx->match_type)
+			return 0;
+
+		if (match_type == fctx->match_type) {
+			/* Ambiguous match */
+			fctx->num_found++;
+			return 0;
+		}
+	}
+
+	/* More exact match found */
+	fctx->match_type = match_type;
+	fctx->num_found = 1;
+	fctx->rmconf = rmconf;
+
+	return 0;
+}
+
 /*
  * search remote configuration.
  * don't use port number to search if its value is either IPSEC_PORT_ANY.
@@ -93,76 +385,110 @@ char *script_names[SCRIPT_MAX + 1] = { "phase1_up", "phase1_down" };
  * OUT:	NULL:	NG
  *	Other:	remote configuration entry.
  */
+
 struct remoteconf *
-getrmconf_strict(remote, allow_anon)
+getrmconf(remote, flags)
 	struct sockaddr *remote;
-	int allow_anon;
+	int flags;
 {
-	struct remoteconf *p;
-	struct remoteconf *anon = NULL;
-	int withport;
-	char buf[NI_MAXHOST + NI_MAXSERV + 10];
-	char addr[NI_MAXHOST], port[NI_MAXSERV];
+	struct rmconf_find_context ctx;
+	int n = 0;
 
-	withport = 0;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.sel.flags = flags;
+	ctx.sel.remote = remote;
 
-#ifndef ENABLE_NATT
-	/* 
-	 * We never have ports set in our remote configurations, but when
-	 * NAT-T is enabled, the kernel can have policies with ports and
-	 * send us an acquire message for a destination that has a port set.
-	 * If we do this port check here, we don't find the remote config.
-	 *
-	 * In an ideal world, we would be able to have remote conf with
-	 * port, and the port could be a wildcard. That test could be used.
-	 */
-	if (remote->sa_family != AF_UNSPEC &&
-	    extract_port(remote) != IPSEC_PORT_ANY)
-		withport = 1;
-#endif /* ENABLE_NATT */
-
-	if (remote->sa_family == AF_UNSPEC)
-		snprintf (buf, sizeof(buf), "%s", "anonymous");
-	else {
-		GETNAMEINFO(remote, addr, port);
-		snprintf(buf, sizeof(buf), "%s%s%s%s", addr,
-			withport ? "[" : "",
-			withport ? port : "",
-			withport ? "]" : "");
+	if (enumrmconf(&ctx.sel, rmconf_find, &ctx) != 0) {
+		plog(LLV_ERROR, LOCATION, remote,
+		     "multiple exact configurations.\n");
+		return NULL;
 	}
 
-	TAILQ_FOREACH(p, &rmtree, chain) {
-		if ((remote->sa_family == AF_UNSPEC
-		     && remote->sa_family == p->remote->sa_family)
-		 || (!withport && cmpsaddrwop(remote, p->remote) == 0)
-		 || (withport && cmpsaddrstrict(remote, p->remote) == 0)) {
-			plog(LLV_DEBUG, LOCATION, NULL,
-				"configuration found for %s.\n", buf);
-			return p;
-		}
-
-		/* save the pointer to the anonymous configuration */
-		if (p->remote->sa_family == AF_UNSPEC)
-			anon = p;
+	if (ctx.rmconf == NULL) {
+		plog(LLV_DEBUG, LOCATION, remote,
+		     "no remote configuration found.\n");
+		return NULL;
 	}
 
-	if (allow_anon && anon != NULL) {
-		plog(LLV_DEBUG, LOCATION, NULL,
-			"anonymous configuration selected for %s.\n", buf);
-		return anon;
+	if (ctx.num_found != 1) {
+		plog(LLV_DEBUG, LOCATION, remote,
+		     "multiple non-exact configurations found.\n");
+		return NULL;
 	}
 
-	plog(LLV_DEBUG, LOCATION, NULL,
-		"no remote configuration found.\n");
+	plog(LLV_DEBUG, LOCATION, remote,
+	     "configuration \"%s\" selected.\n",
+	     ctx.rmconf->name);
 
-	return NULL;
+	return ctx.rmconf;
 }
 
 struct remoteconf *
-getrmconf(remote)
-	struct sockaddr *remote;
+getrmconf_by_ph1(iph1)
+	struct ph1handle *iph1;
 {
-	return getrmconf_strict(remote, 1);
+	struct rmconf_find_context ctx;
+
+	memset(&ctx, 0, sizeof(ctx));
+	rmconf_selector_from_ph1(&ctx.sel, iph1);
+	if (loglevel >= LLV_DEBUG) {
+		char *idstr = NULL;
+
+		if (iph1->id_p != NULL)
+			idstr = ipsecdoi_id2str(iph1->id_p);
+
+		plog(LLV_DEBUG, LOCATION, iph1->remote,
+			"getrmconf_by_ph1: remote %s, identity %s.\n",
+			saddr2str(iph1->remote), idstr ? idstr : "<any>");
+
+		if (idstr)
+			racoon_free(idstr);
+	}
+
+	if (enumrmconf(&ctx.sel, rmconf_find, &ctx) != 0) {
+		plog(LLV_ERROR, LOCATION, iph1->remote,
+		     "multiple exact configurations.\n");
+		return RMCONF_ERR_MULTIPLE;
+	}
+
+	if (ctx.rmconf == NULL) {
+		plog(LLV_DEBUG, LOCATION, iph1->remote,
+		     "no remote configuration found\n");
+		return NULL;
+	}
+
+	if (ctx.num_found != 1) {
+		plog(LLV_DEBUG, LOCATION, iph1->remote,
+		     "multiple non-exact configurations found.\n");
+		return RMCONF_ERR_MULTIPLE;
+	}
+
+	plog(LLV_DEBUG, LOCATION, iph1->remote,
+	     "configuration \"%s\" selected.\n",
+	     ctx.rmconf->name);
+
+	return ctx.rmconf;
+}
+
+struct remoteconf *
+getrmconf_by_name(name)
+	const char *name;
+{
+	struct remoteconf *p;
+
+	plog(LLV_DEBUG, LOCATION, NULL,
+	     "getrmconf_by_name: remote \"%s\".\n",
+	     name);
+
+	RACOON_TAILQ_FOREACH_REVERSE(p, &rmtree, _rmtree, chain) {
+		if (p->name == NULL)
+			continue;
+
+		if (strcmp(name, p->name) == 0)
+			return p;
+	}
+
+	return NULL;
 }
 
 struct remoteconf *
@@ -191,19 +517,14 @@ newrmconf()
 	new->pcheck_level = PROP_CHECK_STRICT;
 	new->verify_identifier = FALSE;
 	new->verify_cert = TRUE;
-	new->getcert_method = ISAKMP_GETCERT_PAYLOAD;
-	new->getcacert_method = ISAKMP_GETCERT_LOCALFILE;
-	new->cacerttype = ISAKMP_CERT_X509SIGN;
-	new->certtype = ISAKMP_CERT_NONE;
 	new->cacertfile = NULL;
 	new->send_cert = TRUE;
 	new->send_cr = TRUE;
+	new->match_empty_cr = FALSE;
 	new->support_proxy = FALSE;
 	for (i = 0; i <= SCRIPT_MAX; i++)
 		new->script[i] = NULL;
 	new->gen_policy = FALSE;
-	new->retry_counter = lcconf->retry_counter;
-	new->retry_interval = lcconf->retry_interval;
 	new->nat_traversal = FALSE;
 	new->rsa_private = genlist_init();
 	new->rsa_public = genlist_init();
@@ -215,33 +536,20 @@ newrmconf()
 	new->dpd_retry = 5;
 	new->dpd_maxfails = 5;
 
+	new->rekey = REKEY_ON;
+
 	new->weak_phase1_check = 0;
 
 #ifdef ENABLE_HYBRID
 	new->xauth = NULL;
 #endif
 
-	return new;
-}
-
-struct remoteconf *
-copyrmconf(remote)
-	struct sockaddr *remote;
-{
-	struct remoteconf *new, *old;
-
-	old = getrmconf_strict (remote, 0);
-	if (old == NULL) {
-		plog (LLV_ERROR, LOCATION, NULL,
-		      "Remote configuration for '%s' not found!\n",
-		      saddr2str (remote));
-		return NULL;
-	}
-
-	new = duprmconf (old);
+	new->lifetime = oakley_get_defaultlifetime();
 
 	return new;
 }
+
+#ifndef ANDROID_PATCHED
 
 void *
 dupidvl(entry, arg)
@@ -264,27 +572,145 @@ dupidvl(entry, arg)
 	return NULL;
 }
 
+void *
+duprsa(entry, arg)
+	void *entry;
+	void *arg;
+{
+	struct rsa_key *new;
+
+	new = rsa_key_dup((struct rsa_key *)entry);
+	if (new == NULL)
+		return (void *) -1;
+	genlist_append(arg, new);
+
+	/* keep genlist_foreach going */
+	return NULL;
+}
+
+/* Creates shallow copy of a remote config. Used for "inherit" keyword. */
 struct remoteconf *
-duprmconf (rmconf)
+duprmconf_shallow (rmconf)
 	struct remoteconf *rmconf;
 {
 	struct remoteconf *new;
+	struct proposalspec *prspec;
 
 	new = racoon_calloc(1, sizeof(*new));
 	if (new == NULL)
 		return NULL;
-	memcpy (new, rmconf, sizeof (*new));
-	// FIXME: We should duplicate the proposal as well.
-	// This is now handled in the cfparse.y
-	// new->proposal = ...;
-	
-	/* duplicate dynamic structures */
-	if (new->etypes)
-		new->etypes=dupetypes(new->etypes);
-	new->idvl_p = genlist_init();
-	genlist_foreach(rmconf->idvl_p, dupidvl, new->idvl_p);
+
+	memcpy(new, rmconf, sizeof(*new));
+	new->name = NULL;
+	new->inherited_from = rmconf;
+
+	new->proposal = NULL; /* will be filled by set_isakmp_proposal() */
 
 	return new;
+}
+
+/* Copies pointer structures of an inherited remote config. 
+ * Used by "inherit" mechanism in a two step copy method, necessary to
+ * prevent both double free() and memory leak during config reload.
+ */
+int
+duprmconf_finish (new)
+	struct remoteconf *new;
+{
+	struct remoteconf *rmconf;
+	int i;
+
+	if (new->inherited_from == NULL)
+		return 0; /* nothing todo, no inheritance */
+
+	rmconf = new->inherited_from;
+
+	/* duplicate dynamic structures unless value overridden */
+	if (new->etypes != NULL && new->etypes == rmconf->etypes)
+		new->etypes = dupetypes(new->etypes);
+	if (new->idvl_p == rmconf->idvl_p) {
+		new->idvl_p = genlist_init();
+		genlist_foreach(rmconf->idvl_p, dupidvl, new->idvl_p);
+	}
+
+	if (new->rsa_private == rmconf->rsa_private) {
+		new->rsa_private = genlist_init();
+		genlist_foreach(rmconf->rsa_private, duprsa, new->rsa_private);
+	}
+	if (new->rsa_public == rmconf->rsa_public) {
+		new->rsa_public = genlist_init();
+		genlist_foreach(rmconf->rsa_public, duprsa, new->rsa_public);
+	}
+	if (new->remote != NULL && new->remote == rmconf->remote) {
+		new->remote = racoon_malloc(sizeof(*new->remote));
+		if (new->remote == NULL) {
+			plog(LLV_ERROR, LOCATION, NULL, 
+			    "duprmconf_finish: malloc failed (remote)\n");
+			exit(1);
+		}
+		memcpy(new->remote, rmconf->remote, sizeof(*new->remote));
+	}
+	if (new->spspec != NULL && new->spspec == rmconf->spspec) {
+		dupspspec_list(new, rmconf);
+	}
+
+	/* proposal has been deep copied already from spspec's, see
+	 * cfparse.y:set_isakmp_proposal, which in turn calls
+	 * cfparse.y:expand_isakmpspec where the copying happens.
+	 */
+
+#ifdef ENABLE_HYBRID
+	if (new->xauth != NULL && new->xauth == rmconf->xauth) {
+		new->xauth = xauth_rmconf_dup(new->xauth);
+		if (new->xauth == NULL)
+			exit(1);
+	}
+#endif
+
+        /* duplicate strings unless value overridden */ 
+	if (new->mycertfile != NULL && new->mycertfile == rmconf->mycertfile) { 
+		new->mycertfile = racoon_strdup(new->mycertfile); 
+		STRDUP_FATAL(new->mycertfile); 
+	} 
+	if (new->myprivfile != NULL && new->myprivfile == rmconf->myprivfile) { 
+		new->myprivfile = racoon_strdup(new->myprivfile); 
+		STRDUP_FATAL(new->myprivfile); 
+	} 
+	if (new->peerscertfile != NULL && new->peerscertfile == rmconf->peerscertfile) { 
+		new->peerscertfile = racoon_strdup(new->peerscertfile); 
+		STRDUP_FATAL(new->peerscertfile); 
+	} 
+	if (new->cacertfile != NULL && new->cacertfile == rmconf->cacertfile) { 
+		new->cacertfile = racoon_strdup(new->cacertfile); 
+		STRDUP_FATAL(new->cacertfile); 
+	} 
+	if (new->idv != NULL && new->idv == rmconf->idv) {
+		new->idv = vdup(new->idv); 
+		STRDUP_FATAL(new->idv); 
+	}
+	if (new->key != NULL && new->key == rmconf->key) {
+		new->key = vdup(new->key); 
+		STRDUP_FATAL(new->key); 
+	}
+	if (new->mycert != NULL && new->mycert == rmconf->mycert) {
+		new->mycert = vdup(new->mycert);
+		STRDUP_FATAL(new->mycert); 
+	}
+	if (new->peerscert != NULL && new->peerscert == rmconf->peerscert) {
+		new->peerscert = vdup(new->peerscert);
+		STRDUP_FATAL(new->peerscert); 
+	}
+	if (new->cacert != NULL && new->cacert == rmconf->cacert) {
+		new->cacert = vdup(new->cacert);
+		STRDUP_FATAL(new->cacert); 
+	}
+	for (i = 0; i <= SCRIPT_MAX; i++)
+		if (new->script[i] != NULL && new->script[i] == rmconf->script[i]) {
+			new->script[i] = vdup(new->script[i]);
+			STRDUP_FATAL(new->script[i]);
+		}
+
+	return 0;
 }
 
 static void
@@ -298,6 +724,8 @@ void
 delrmconf(rmconf)
 	struct remoteconf *rmconf;
 {
+	int i;
+
 #ifdef ENABLE_HYBRID
 	if (rmconf->xauth)
 		xauth_rmconf_delete(&rmconf->xauth);
@@ -306,14 +734,54 @@ delrmconf(rmconf)
 		deletypes(rmconf->etypes);
 		rmconf->etypes=NULL;
 	}
+	if (rmconf->idv)
+		vfree(rmconf->idv);
+	if (rmconf->key)
+		vfree(rmconf->key);
 	if (rmconf->idvl_p)
 		genlist_free(rmconf->idvl_p, idspec_free);
 	if (rmconf->dhgrp)
 		oakley_dhgrp_free(rmconf->dhgrp);
 	if (rmconf->proposal)
 		delisakmpsa(rmconf->proposal);
+	flushspspec(rmconf);
+	if (rmconf->mycert)
+		vfree(rmconf->mycert);
+	if (rmconf->mycertfile)
+		racoon_free(rmconf->mycertfile);
+	if (rmconf->myprivfile)
+		racoon_free(rmconf->myprivfile);
+	if (rmconf->peerscert)
+		vfree(rmconf->peerscert);
+	if (rmconf->peerscertfile)
+		racoon_free(rmconf->peerscertfile);
+	if (rmconf->cacert)
+		vfree(rmconf->cacert);
+	if (rmconf->cacertfile)
+		racoon_free(rmconf->cacertfile);
+	if (rmconf->rsa_private)
+		genlist_free(rmconf->rsa_private, rsa_key_free);
+	if (rmconf->rsa_public)
+		genlist_free(rmconf->rsa_public, rsa_key_free);
+	if (rmconf->name)
+		racoon_free(rmconf->name);
+	if (rmconf->remote)
+		racoon_free(rmconf->remote);
+	for (i = 0; i <= SCRIPT_MAX; i++)
+		if (rmconf->script[i])
+			vfree(rmconf->script[i]);
+
 	racoon_free(rmconf);
 }
+
+#else
+
+void delrmconf(struct remoteconf *rmconf)
+{
+        exit(1);
+}
+
+#endif
 
 void
 delisakmpsa(sa)
@@ -336,11 +804,11 @@ dupetypes(orig)
 {
 	struct etypes *new;
 
-	if (!orig) 
+	if (!orig)
 		return NULL;
 
 	new = racoon_malloc(sizeof(struct etypes));
-	if (new == NULL) 
+	if (new == NULL)
 		return NULL;
 
 	new->type = orig->type;
@@ -368,6 +836,14 @@ void
 insrmconf(new)
 	struct remoteconf *new;
 {
+	if (new->name == NULL) {
+		new->name = racoon_strdup(saddr2str(new->remote));
+	}
+	if (new->remote == NULL) {
+		new->remote = newsaddr(sizeof(struct sockaddr));
+		new->remote->sa_family = AF_UNSPEC;
+	}
+
 	TAILQ_INSERT_HEAD(&rmtree, new, chain);
 }
 
@@ -397,15 +873,17 @@ initrmconf()
 }
 
 void
-save_rmconf()
+rmconf_start_reload()
 {
 	rmtree_save=rmtree;
 	initrmconf();
 }
 
 void
-save_rmconf_flush()
+rmconf_finish_reload()
 {
+	remoteconf_tailq_head_t rmtree_tmp;
+
 	rmtree_tmp=rmtree;
 	rmtree=rmtree_save;
 	flushrmconf();
@@ -416,19 +894,22 @@ save_rmconf_flush()
 
 
 /* check exchange type to be acceptable */
-struct etypes *
-check_etypeok(rmconf, etype)
+int
+check_etypeok(rmconf, ctx)
 	struct remoteconf *rmconf;
-	u_int8_t etype;
+	void *ctx;
 {
+	u_int8_t etype = (u_int8_t) (intptr_t) ctx;
 	struct etypes *e;
 
 	for (e = rmconf->etypes; e != NULL; e = e->next) {
 		if (e->type == etype)
-			break;
+			return 1;
+		plog(LLV_DEBUG2, LOCATION, NULL,
+		     "Etype mismatch: got %d, expected %d.\n", e->type, etype);
 	}
 
-	return e;
+	return 0;
 }
 
 /*%%%*/
@@ -448,7 +929,6 @@ newisakmpsa()
 	new->vendorid = VENDORID_UNKNOWN;
 
 	new->next = NULL;
-	new->rmconf = NULL;
 #ifdef HAVE_GSSAPI
 	new->gssid = NULL;
 #endif
@@ -466,8 +946,6 @@ insisakmpsa(new, rmconf)
 {
 	struct isakmpsa *p;
 
-	new->rmconf = rmconf;
-
 	if (rmconf->proposal == NULL) {
 		rmconf->proposal = new;
 		return;
@@ -476,21 +954,6 @@ insisakmpsa(new, rmconf)
 	for (p = rmconf->proposal; p->next != NULL; p = p->next)
 		;
 	p->next = new;
-
-	return;
-}
-
-struct remoteconf *
-foreachrmconf(rmconf_func_t rmconf_func, void *data)
-{
-  struct remoteconf *p, *ret = NULL;
-  RACOON_TAILQ_FOREACH_REVERSE(p, &rmtree, _rmtree, chain) {
-    ret = (*rmconf_func)(p, data);
-    if (ret)
-      break;
-  }
-
-  return ret;
 }
 
 static void *
@@ -507,7 +970,7 @@ dump_peers_identifiers (void *entry, void *arg)
 	return NULL;
 }
 
-static struct remoteconf *
+static int
 dump_rmconf_single (struct remoteconf *p, void *data)
 {
 	struct etypes *etype = p->etypes;
@@ -515,10 +978,11 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 	char buf[1024], *pbuf;
 
 	pbuf = buf;
-	pbuf += sprintf(pbuf, "remote %s", saddr2str(p->remote));
+
+	pbuf += sprintf(pbuf, "remote \"%s\"", p->name);
 	if (p->inherited_from)
-		pbuf += sprintf(pbuf, " inherit %s",
-				saddr2str(p->inherited_from->remote));
+		pbuf += sprintf(pbuf, " inherit \"%s\"",
+				p->inherited_from->name);
 	plog(LLV_INFO, LOCATION, NULL, "%s {\n", buf);
 	pbuf = buf;
 	pbuf += sprintf(pbuf, "\texchange_type ");
@@ -533,23 +997,30 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 	pbuf += sprintf(pbuf, "\tmy_identifier %s", s_idtype (p->idvtype));
 	if (p->idvtype == IDTYPE_ASN1DN) {
 		plog(LLV_INFO, LOCATION, NULL, "%s;\n", buf);
-		plog(LLV_INFO, LOCATION, NULL, "\tcertificate_type %s \"%s\" \"%s\";\n",
-			p->certtype == ISAKMP_CERT_X509SIGN ? "x509" : "*UNKNOWN*",
-			p->mycertfile, p->myprivfile);
-		switch (p->getcert_method) {
-		  case 0:
-		  	break;
-		  case ISAKMP_GETCERT_PAYLOAD:
-			plog(LLV_INFO, LOCATION, NULL, "\t/* peers certificate from payload */\n");
+		plog(LLV_INFO, LOCATION, NULL,
+		     "\tcertificate_type %s \"%s\" \"%s\";\n",
+		     oakley_get_certtype(p->mycert) == ISAKMP_CERT_X509SIGN
+		       ? "x509" : "*UNKNOWN*",
+		     p->mycertfile, p->myprivfile);
+
+		switch (oakley_get_certtype(p->peerscert)) {
+		case ISAKMP_CERT_NONE:
+			plog(LLV_INFO, LOCATION, NULL,
+			     "\t/* peers certificate from payload */\n");
 			break;
-		  case ISAKMP_GETCERT_LOCALFILE:
-			plog(LLV_INFO, LOCATION, NULL, "\tpeers_certfile \"%s\";\n", p->peerscertfile);
+		case ISAKMP_CERT_X509SIGN:
+			plog(LLV_INFO, LOCATION, NULL,
+			     "\tpeers_certfile \"%s\";\n", p->peerscertfile);
 			break;
-		  case ISAKMP_GETCERT_DNS:
-			plog(LLV_INFO, LOCATION, NULL, "\tpeer_certfile dnssec;\n");
+		case ISAKMP_CERT_DNS:
+			plog(LLV_INFO, LOCATION, NULL,
+			     "\tpeers_certfile dnssec;\n");
 			break;
-		  default:
-			plog(LLV_INFO, LOCATION, NULL, "\tpeers_certfile *UNKNOWN* (%d)\n", p->getcert_method);
+		default:
+			plog(LLV_INFO, LOCATION, NULL,
+			     "\tpeers_certfile *UNKNOWN* (%d)\n",
+			     oakley_get_certtype(p->peerscert));
+			break;
 		}
 	}
 	else {
@@ -559,10 +1030,14 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 		genlist_foreach(p->idvl_p, &dump_peers_identifiers, NULL);
 	}
 
+	plog(LLV_INFO, LOCATION, NULL, "\trekey %s;\n",
+		p->rekey == REKEY_FORCE ? "force" : s_switch (p->rekey));
 	plog(LLV_INFO, LOCATION, NULL, "\tsend_cert %s;\n",
 		s_switch (p->send_cert));
 	plog(LLV_INFO, LOCATION, NULL, "\tsend_cr %s;\n",
 		s_switch (p->send_cr));
+	plog(LLV_INFO, LOCATION, NULL, "\tmatch_empty_cr %s;\n",
+		s_switch (p->match_empty_cr));
 	plog(LLV_INFO, LOCATION, NULL, "\tverify_cert %s;\n",
 		s_switch (p->verify_cert));
 	plog(LLV_INFO, LOCATION, NULL, "\tverify_identifier %s;\n",
@@ -588,9 +1063,8 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 	while (prop) {
 		plog(LLV_INFO, LOCATION, NULL, "\n");
 		plog(LLV_INFO, LOCATION, NULL,
-			"\t/* prop_no=%d, trns_no=%d, rmconf=%s */\n",
-			prop->prop_no, prop->trns_no,
-			saddr2str(prop->rmconf->remote));
+			"\t/* prop_no=%d, trns_no=%d */\n",
+			prop->prop_no, prop->trns_no);
 		plog(LLV_INFO, LOCATION, NULL, "\tproposal {\n");
 		plog(LLV_INFO, LOCATION, NULL, "\t\tlifetime time %lu sec;\n",
 			(long)prop->lifetime);
@@ -598,11 +1072,11 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 			prop->lifebyte);
 		plog(LLV_INFO, LOCATION, NULL, "\t\tdh_group %s;\n",
 			alg_oakley_dhdef_name(prop->dh_group));
-		plog(LLV_INFO, LOCATION, NULL, "\t\tencryption_algorithm %s;\n", 
+		plog(LLV_INFO, LOCATION, NULL, "\t\tencryption_algorithm %s;\n",
 			alg_oakley_encdef_name(prop->enctype));
-		plog(LLV_INFO, LOCATION, NULL, "\t\thash_algorithm %s;\n", 
+		plog(LLV_INFO, LOCATION, NULL, "\t\thash_algorithm %s;\n",
 			alg_oakley_hashdef_name(prop->hashtype));
-		plog(LLV_INFO, LOCATION, NULL, "\t\tauthentication_method %s;\n", 
+		plog(LLV_INFO, LOCATION, NULL, "\t\tauthentication_method %s;\n",
 			alg_oakley_authdef_name(prop->authmethod));
 		plog(LLV_INFO, LOCATION, NULL, "\t}\n");
 		prop = prop->next;
@@ -610,13 +1084,13 @@ dump_rmconf_single (struct remoteconf *p, void *data)
 	plog(LLV_INFO, LOCATION, NULL, "}\n");
 	plog(LLV_INFO, LOCATION, NULL, "\n");
 
-	return NULL;
+	return 0;
 }
 
 void
 dumprmconf()
 {
-	foreachrmconf (dump_rmconf_single, NULL);
+	enumrmconf(NULL, dump_rmconf_single, NULL);
 }
 
 struct idspec *
@@ -671,25 +1145,115 @@ script_path_add(path)
 struct isakmpsa *
 dupisakmpsa(struct isakmpsa *sa)
 {
-	struct isakmpsa *res=NULL;
+	struct isakmpsa *res = NULL;
 
 	if(sa == NULL)
 		return NULL;
 
-	res=newisakmpsa();
+	res = newisakmpsa();
 	if(res == NULL)
 		return NULL;
 
-	*res=*sa;
+	*res = *sa;
 #ifdef HAVE_GSSAPI
-	/* XXX gssid
-	 */
+	if (sa->gssid != NULL)
+		res->gssid = vdup(sa->gssid);
 #endif
-	res->next=NULL;
+	res->next = NULL;
 
 	if(sa->dhgrp != NULL)
-		oakley_setdhgroup (sa->dh_group, &(res->dhgrp));
+		oakley_setdhgroup(sa->dh_group, &res->dhgrp);
 
 	return res;
 
+}
+
+#ifdef ENABLE_HYBRID
+int
+isakmpsa_switch_authmethod(authmethod)
+	int authmethod;
+{
+	switch(authmethod) {
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAENC_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAENC_I;
+		break;
+	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_R:
+		authmethod = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_I;
+		break;
+	default:
+		break;
+	}
+
+	return authmethod;
+}
+#endif
+
+/*
+ * Given a proposed ISAKMP SA, and a list of acceptable
+ * ISAKMP SAs, it compares using pcheck_level policy and
+ * returns first match (if any).
+ */
+struct isakmpsa *
+checkisakmpsa(pcheck_level, proposal, acceptable)
+	int pcheck_level;
+	struct isakmpsa *proposal, *acceptable;
+{
+	struct isakmpsa *p;
+
+	for (p = acceptable; p != NULL; p = p->next){
+		plog(LLV_DEBUG2, LOCATION, NULL,
+		     "checkisakmpsa:\nauthmethod: %d / %d\n",
+		     isakmpsa_switch_authmethod(proposal->authmethod), isakmpsa_switch_authmethod(p->authmethod));
+		if (isakmpsa_switch_authmethod(proposal->authmethod) != isakmpsa_switch_authmethod(p->authmethod) ||
+		    proposal->enctype != p->enctype ||
+                    proposal->dh_group != p->dh_group ||
+		    proposal->hashtype != p->hashtype)
+			continue;
+
+		switch (pcheck_level) {
+		case PROP_CHECK_OBEY:
+			break;
+
+		case PROP_CHECK_CLAIM:
+		case PROP_CHECK_STRICT:
+			if (proposal->encklen < p->encklen ||
+#if 0
+			    proposal->lifebyte > p->lifebyte ||
+#endif
+			    proposal->lifetime > p->lifetime)
+				continue;
+			break;
+
+		case PROP_CHECK_EXACT:
+			if (proposal->encklen != p->encklen ||
+#if 0
+                            proposal->lifebyte != p->lifebyte ||
+#endif
+			    proposal->lifetime != p->lifetime)
+				continue;
+			break;
+
+		default:
+			continue;
+		}
+
+		return p;
+	}
+
+	return NULL;
 }
