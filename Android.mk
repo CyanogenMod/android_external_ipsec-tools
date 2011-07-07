@@ -28,11 +28,14 @@ LOCAL_SRC_FILES := \
 	src/racoon/isakmp.c \
 	src/racoon/isakmp_agg.c \
 	src/racoon/isakmp_base.c \
+	src/racoon/isakmp_cfg.c \
 	src/racoon/isakmp_frag.c \
 	src/racoon/isakmp_ident.c \
 	src/racoon/isakmp_inf.c \
 	src/racoon/isakmp_newg.c \
 	src/racoon/isakmp_quick.c \
+	src/racoon/isakmp_unity.c \
+	src/racoon/isakmp_xauth.c \
 	src/racoon/ipsec_doi-0.7.3.c \
 	src/racoon/nattraversal.c \
 	src/racoon/oakley.c \
@@ -63,6 +66,8 @@ LOCAL_SHARED_LIBRARIES := libcutils libcrypto
 
 LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
 
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
+
 LOCAL_MODULE := racoon
 
 include $(BUILD_EXECUTABLE)
@@ -76,6 +81,8 @@ LOCAL_SRC_FILES := \
 	src/libipsec/ipsec_strerror.c
 
 LOCAL_CFLAGS := -DHAVE_CONFIG_H
+
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
 
 LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH) \

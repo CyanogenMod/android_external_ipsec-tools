@@ -1256,6 +1256,8 @@ ldap_group_end:
 
 #endif
 
+#ifndef ANDROID_PATCHED
+
 int
 xauth_login_system(usr, pwd)
 	char *usr;
@@ -1292,6 +1294,8 @@ xauth_login_system(usr, pwd)
 
 	return -1;
 }
+
+#endif
 
 int
 xauth_group_system(usr, grp)

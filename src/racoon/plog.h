@@ -55,7 +55,8 @@
 #define plogdump(...)
 
 extern void do_plog(int level, char *format, ...);
-extern char* binsanitize(char *binary, size_t size);
+extern char *binsanitize(char *binary, size_t size);
+extern char *pname;
 
 #else
 

@@ -3,7 +3,8 @@
 #define ENABLE_NATT_00
 #define ENABLE_NATT_02
 #define ENABLE_NATT_RFC
-#undef ENABLE_DPD
+#define ENABLE_DPD
+#define ENABLE_HYBRID
 
 #define HAVE_OPENSSL_AES_H
 #undef HAVE_OPENSSL_ENGINE_H

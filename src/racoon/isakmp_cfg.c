@@ -38,7 +38,9 @@
 #include <sys/socket.h>
 #include <sys/queue.h>
 
+#ifndef ANDROID_PATCHED
 #include <utmpx.h>
+#endif
 #if defined(__APPLE__) && defined(__MACH__)
 #include <util.h>
 #endif
@@ -1649,6 +1651,8 @@ isakmp_cfg_radius_common(radius_state, port)
 }
 #endif
 
+#ifndef ANDROID_PATCHED
+
 /*
 	Logs the user into the utmp system files.
 */
@@ -1707,6 +1711,8 @@ isakmp_cfg_accounting_system(port, raddr, usr, inout)
 	return 0;
 }
 	
+#endif
+
 int 
 isakmp_cfg_getconfig(iph1)
 	struct ph1handle *iph1;
