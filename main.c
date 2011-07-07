@@ -31,8 +31,6 @@
 
 #include "config.h"
 #include "gcmalloc.h"
-#include "vmbuf.h"
-#include "localconf.h"
 #include "session.h"
 #include "schedule.h"
 #include "plog.h"
@@ -93,6 +91,8 @@ static int get_control_and_arguments(int *argc, char ***argv)
 
 extern void setup(int argc, char **argv);
 
+char *pname;
+
 static int monitor_count;
 static struct {
     int (*callback)(void *ctx, int fd);
@@ -115,7 +115,7 @@ int main(int argc, char **argv)
 #ifdef ANDROID_CHANGES
     int control = get_control_and_arguments(&argc, &argv);
     if (control != -1) {
-        lcconf->chroot = "%p";
+        pname = "%p";
     }
 #endif
 

@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/param.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -418,8 +419,8 @@ vchar_t *getpskbyname(vchar_t *name)
 
 void getpathname(char *path, int length, int type, const char *name)
 {
-    if (localconf.chroot) {
-        snprintf(path, length, localconf.chroot, name);
+    if (pname) {
+        snprintf(path, length, pname, name);
     } else {
         strncpy(path, name, length);
     }

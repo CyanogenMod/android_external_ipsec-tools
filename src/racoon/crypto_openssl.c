@@ -461,11 +461,10 @@ eay_cmp_asn1dn(n1, n2)
 
 #ifdef ANDROID_CHANGES
 
-#include "localconf.h"
 static BIO *BIO_from_android(char *path)
 {
 	void *data;
-	if (sscanf(path, lcconf->chroot, &data) == 1) {
+	if (sscanf(path, pname, &data) == 1) {
 		return BIO_new_mem_buf(data, -1);
 	}
 	return NULL;
@@ -499,7 +498,7 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 		X509_STORE_set_verify_cb_func(cert_ctx, cb_check_cert_remote);
 
 #ifdef ANDROID_CHANGES
-	if (lcconf->chroot) {
+	if (pname) {
 		BIO *bio = BIO_from_android(CAfile);
 		STACK_OF(X509_INFO) *stack;
 		X509_INFO *info;
@@ -956,7 +955,7 @@ eay_get_x509cert(path)
 	int error;
 
 #ifdef ANDROID_CHANGES
-	if (lcconf->chroot) {
+	if (pname) {
 		BIO *bio = BIO_from_android(path);
 		if (!bio) {
 			return NULL;
@@ -1062,7 +1061,7 @@ eay_get_pkcs1privkey(path)
 	int error = -1;
 
 #ifdef ANDROID_CHANGES
-	if (lcconf->chroot) {
+	if (pname) {
 		BIO *bio = BIO_from_android(path);
 		if (!bio) {
 			return NULL;
