@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 The Android Open Source Project
+ * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -123,6 +123,7 @@ static void set_globals(char *interfaze, char *server)
     localconf.port_isakmp = PORT_ISAKMP;
     localconf.port_isakmp_natt = PORT_ISAKMP_NATT;
     localconf.default_af = AF_INET;
+    localconf.pathinfo[LC_PATHTYPE_CERT] = "./";
     localconf.pad_random = LC_DEFAULT_PAD_RANDOM;
     localconf.pad_randomlen = LC_DEFAULT_PAD_RANDOM;
     localconf.pad_strict = LC_DEFAULT_PAD_STRICT;
@@ -335,14 +336,28 @@ void setup(int argc, char **argv)
         spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
         remoteconf->myprivfile = argv[5];
         remoteconf->mycertfile = argv[6];
-        remoteconf->cacertfile = argv[7];
+        remoteconf->mycert = eay_get_x509cert(argv[6]);
+        if (!remoteconf->mycert) {
+            do_plog(LLV_ERROR, "Cannot load user certificate\n");
+            exit(1);
+        }
+        if (!*argv[7]) {
+            remoteconf->verify_cert = FALSE;
+        } else {
+            remoteconf->cacertfile = argv[7];
+            remoteconf->cacert = eay_get_x509cert(argv[7]);
+            if (!remoteconf->cacert) {
+                do_plog(LLV_ERROR, "Cannot load CA certificate\n");
+                exit(1);
+            }
+        }
         remoteconf->idvtype = IDTYPE_ASN1DN;
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
     } else {
         printf("Usage: %s <interface> <server> [...],\n"
                "    where [...] can be:\n"
                "    udppsk <port> <pre-shared-key>\n"
-               "    udprsa <port> <my-private-key> <my-cert> <ca-cert>\n",
+               "    udprsa <port> <user-private-key> <user-cert> <ca-cert>\n",
                argv[0]);
         exit(0);
     }
@@ -400,7 +415,11 @@ vchar_t *getpskbyname(vchar_t *name)
 
 void getpathname(char *path, int length, int type, const char *name)
 {
-    strncpy(path, name, length);
+    if (localconf.chroot) {
+        snprintf(path, length, localconf.chroot, name);
+    } else {
+        strncpy(path, name, length);
+    }
 }
 
 /* sainfo.h */

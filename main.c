@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 The Android Open Source Project
+ * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,20 +31,22 @@
 
 #include "config.h"
 #include "gcmalloc.h"
+#include "vmbuf.h"
+#include "localconf.h"
 #include "session.h"
 #include "schedule.h"
 #include "plog.h"
 
 #ifdef ANDROID_CHANGES
 
-static void android_get_arguments(int *argc, char ***argv)
+static int get_control_and_arguments(int *argc, char ***argv)
 {
     static char *args[32];
     int control;
     int i;
 
     if ((i = android_get_control_socket("racoon")) == -1) {
-        return;
+        return -1;
     }
     do_plog(LLV_DEBUG, "Waiting for control socket");
     if (listen(i, 1) == -1 || (control = accept(i, NULL, 0)) == -1) {
@@ -84,7 +86,7 @@ static void android_get_arguments(int *argc, char ***argv)
 
     *argc = i;
     *argv = args;
-    close(control);
+    return control;
 }
 
 #endif
@@ -110,19 +112,21 @@ static void terminated()
 
 int main(int argc, char **argv)
 {
+#ifdef ANDROID_CHANGES
+    int control = get_control_and_arguments(&argc, &argv);
+    if (control != -1) {
+        lcconf->chroot = "%p";
+    }
+#endif
+
     do_plog(LLV_INFO, "ipsec-tools 0.8.0 (http://ipsec-tools.sf.net)\n");
+    setup(argc, argv);
 
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
     signal(SIGPIPE, SIG_IGN);
     atexit(terminated);
-
-#ifdef ANDROID_CHANGES
-/*    setuid(AID_VPN); */
-    android_get_arguments(&argc, &argv);
-#endif
-    setup(argc, argv);
 
     while (1) {
         struct timeval *tv = schedular();

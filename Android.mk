@@ -55,8 +55,7 @@ LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH)/src/libipsec \
 	$(LOCAL_PATH)/src/racoon \
 	$(LOCAL_PATH)/src/racoon/missing \
-	external/openssl/include \
-	frameworks/base/cmds/keystore
+	external/openssl/include
 
 LOCAL_STATIC_LIBRARIES := libipsec
 

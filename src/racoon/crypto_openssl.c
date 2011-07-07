@@ -69,7 +69,6 @@
 #else
 #define EVP_bf_cbc()    NULL
 #define EVP_cast5_cbc() NULL
-#include "keystore_get.h"
 #endif
 #include <openssl/err.h>
 #ifdef HAVE_OPENSSL_RC5_H
@@ -461,18 +460,18 @@ eay_cmp_asn1dn(n1, n2)
 }
 
 #ifdef ANDROID_CHANGES
-static BIO *BIO_from_keystore(char *key)
-{
-	BIO *bio = NULL;
-	char value[KEYSTORE_MESSAGE_SIZE];
-	int length = keystore_get(key, strlen(key), value);
-	if (length != -1 && (bio = BIO_new(BIO_s_mem())) != NULL) {
-		BIO_write(bio, value, length);
-	}
-	return bio;
-}
-#endif
 
+#include "localconf.h"
+static BIO *BIO_from_android(char *path)
+{
+	void *data;
+	if (sscanf(path, lcconf->chroot, &data) == 1) {
+		return BIO_new_mem_buf(data, -1);
+	}
+	return NULL;
+}
+
+#endif
 
 /*
  * this functions is derived from apps/verify.c in OpenSSL0.9.5
@@ -499,26 +498,9 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 	else 
 		X509_STORE_set_verify_cb_func(cert_ctx, cb_check_cert_remote);
 
-#ifndef ANDROID_CHANGES
-	lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
-	if (lookup == NULL)
-		goto end;
-
-	X509_LOOKUP_load_file(lookup, CAfile, 
-	    (CAfile == NULL) ? X509_FILETYPE_DEFAULT : X509_FILETYPE_PEM);
-
-	lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_hash_dir());
-	if (lookup == NULL)
-		goto end;
-	error = X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM);
-	if(!error) {
-		error = -1;
-		goto end;
-	}
-	error = -1;	/* initialized */
-#else
-	if (CAfile) {
-		BIO *bio = BIO_from_keystore(CAfile);
+#ifdef ANDROID_CHANGES
+	if (lcconf->chroot) {
+		BIO *bio = BIO_from_android(CApath);
 		STACK_OF(X509_INFO) *stack;
 		X509_INFO *info;
 		int i;
@@ -541,6 +523,25 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 			}
 		}
 		sk_X509_INFO_pop_free(stack, X509_INFO_free);
+	} else {
+#endif
+	lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_file());
+	if (lookup == NULL)
+		goto end;
+
+	X509_LOOKUP_load_file(lookup, CAfile, 
+	    (CAfile == NULL) ? X509_FILETYPE_DEFAULT : X509_FILETYPE_PEM);
+
+	lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_hash_dir());
+	if (lookup == NULL)
+		goto end;
+	error = X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM);
+	if(!error) {
+		error = -1;
+		goto end;
+	}
+	error = -1;	/* initialized */
+#ifdef ANDROID_CHANGES
 	}
 #endif
 
@@ -955,19 +956,23 @@ eay_get_x509cert(path)
 	int error;
 
 #ifdef ANDROID_CHANGES
-	BIO *bio = BIO_from_keystore(path);
-	x509 = NULL;
-	if (bio) {
+	if (lcconf->chroot) {
+		BIO *bio = BIO_from_android(path);
+		if (!bio) {
+			return NULL;
+		}
 		x509 = PEM_read_bio_X509(bio, NULL, NULL, NULL);
 		BIO_free(bio);
-	}
-#else
+	} else {
+#endif
 	/* Read private key */
 	fp = fopen(path, "r");
 	if (fp == NULL)
 		return NULL;
 	x509 = PEM_read_X509(fp, NULL, NULL, NULL);
 	fclose (fp);
+#ifdef ANDROID_CHANGES
+	}
 #endif
 
 	if (x509 == NULL)
@@ -1057,12 +1062,15 @@ eay_get_pkcs1privkey(path)
 	int error = -1;
 
 #ifdef ANDROID_CHANGES
-	BIO *bio = BIO_from_keystore(path);
-	if (bio) {
+	if (lcconf->chroot) {
+		BIO *bio = BIO_from_android(path);
+		if (!bio) {
+			return NULL;
+		}
 		evp = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
 		BIO_free(bio);
-	}
-#else
+	} else {
+#endif
 	/* Read private key */
 	fp = fopen(path, "r");
 	if (fp == NULL)
@@ -1071,6 +1079,8 @@ eay_get_pkcs1privkey(path)
 	evp = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
 
 	fclose (fp);
+#ifdef ANDROID_CHANGES
+	}
 #endif
 
 	if (evp == NULL)
