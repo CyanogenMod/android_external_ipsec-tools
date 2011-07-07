@@ -332,11 +332,13 @@ void setup(int argc, char **argv)
         remoteconf->idvtype = IDTYPE_ADDRESS;
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
     } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
+        char path[PATH_MAX + 1];
         set_port(target, atoi(argv[4]));
         spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
         remoteconf->myprivfile = argv[5];
         remoteconf->mycertfile = argv[6];
-        remoteconf->mycert = eay_get_x509cert(argv[6]);
+        getpathname(path, sizeof(path), LC_PATHTYPE_CERT, argv[6]);
+        remoteconf->mycert = eay_get_x509cert(path);
         if (!remoteconf->mycert) {
             do_plog(LLV_ERROR, "Cannot load user certificate\n");
             exit(1);
@@ -345,7 +347,8 @@ void setup(int argc, char **argv)
             remoteconf->verify_cert = FALSE;
         } else {
             remoteconf->cacertfile = argv[7];
-            remoteconf->cacert = eay_get_x509cert(argv[7]);
+            getpathname(path, sizeof(path), LC_PATHTYPE_CERT, argv[7]);
+            remoteconf->cacert = eay_get_x509cert(path);
             if (!remoteconf->cacert) {
                 do_plog(LLV_ERROR, "Cannot load CA certificate\n");
                 exit(1);
@@ -420,6 +423,7 @@ void getpathname(char *path, int length, int type, const char *name)
     } else {
         strncpy(path, name, length);
     }
+    path[length - 1] = '\0';
 }
 
 /* sainfo.h */

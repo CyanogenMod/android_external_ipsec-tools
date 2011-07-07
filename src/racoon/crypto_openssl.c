@@ -500,7 +500,7 @@ eay_check_x509cert(cert, CApath, CAfile, local)
 
 #ifdef ANDROID_CHANGES
 	if (lcconf->chroot) {
-		BIO *bio = BIO_from_android(CApath);
+		BIO *bio = BIO_from_android(CAfile);
 		STACK_OF(X509_INFO) *stack;
 		X509_INFO *info;
 		int i;
