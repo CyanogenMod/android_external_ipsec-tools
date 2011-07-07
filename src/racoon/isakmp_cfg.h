@@ -35,6 +35,13 @@
 #include <security/pam_appl.h>
 #endif
 
+#ifdef ANDROID_PATCHED
+#include <arpa/inet.h>
+#ifndef MAXNS
+#define MAXNS 2
+#endif
+#endif
+
 /* 
  * XXX don't forget to update 
  * src/racoon/handler.c:exclude_cfg_addr()

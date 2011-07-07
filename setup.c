@@ -50,6 +50,7 @@
 #include "plog.h"
 #include "admin.h"
 #include "privsep.h"
+#include "throttle.h"
 #include "misc.h"
 
 static struct localconf localconf;
@@ -427,6 +428,39 @@ void getpathname(char *path, int length, int type, const char *name)
     path[length - 1] = '\0';
 }
 
+/* grabmyaddr.h */
+
+int myaddr_getsport(struct sockaddr *addr)
+{
+    return 0;
+}
+
+int myaddr_getfd(struct sockaddr *addr)
+{
+#ifdef ENABLE_NATT
+    if (myaddrs[1].fd != -1 &&
+            cmpsaddr(addr, myaddrs[1].addr) == CMPSADDR_MATCH) {
+        return myaddrs[1].fd;
+    }
+#endif
+    if (cmpsaddr(addr, myaddrs[0].addr) < CMPSADDR_MISMATCH) {
+        return myaddrs[0].fd;
+    }
+    return -1;
+}
+
+/* misc.h */
+
+int racoon_hexdump(void *data, size_t length)
+{
+    return 0;
+}
+
+void close_on_exec(int fd)
+{
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+}
+
 /* sainfo.h */
 
 struct sainfo *getsainfo(const vchar_t *src, const vchar_t *dst,
@@ -467,35 +501,20 @@ int privsep_script_exec(char *script, int name, char * const *environ)
     return 0;
 }
 
-/* grabmyaddr.h */
-
-int myaddr_getsport(struct sockaddr *addr)
+int privsep_accounting_system(int port, struct sockaddr *addr,
+        char *user, int status)
 {
     return 0;
 }
 
-int myaddr_getfd(struct sockaddr *addr)
+int privsep_xauth_login_system(char *user, char *password)
 {
-#ifdef ENABLE_NATT
-    if (myaddrs[1].fd != -1 &&
-            cmpsaddr(addr, myaddrs[1].addr) == CMPSADDR_MATCH) {
-        return myaddrs[1].fd;
-    }
-#endif
-    if (cmpsaddr(addr, myaddrs[0].addr) < CMPSADDR_MISMATCH) {
-        return myaddrs[0].fd;
-    }
     return -1;
 }
 
-/* misc.h */
+/* throttle.h */
 
-int racoon_hexdump(void *data, size_t length)
+int throttle_host(struct sockaddr *addr, int fail)
 {
     return 0;
-}
-
-void close_on_exec(int fd)
-{
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
 }
