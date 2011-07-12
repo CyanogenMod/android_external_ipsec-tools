@@ -148,7 +148,7 @@ struct sockaddr *getlocaladdr(struct sockaddr *remote)
 {   
     struct sockaddr_storage local;
     socklen_t len = sysdep_sa_len(remote);
-    int s = socket(remote->sa_family, SOCK_DGRAM, 0);
+    int s = privsep_socket(remote->sa_family, SOCK_DGRAM, 0);
     if (s == -1 || connect(s, remote, len) == -1 ||
         getsockname(s, (struct sockaddr *)&local, &len) == -1) {
         close(s);
@@ -161,7 +161,6 @@ struct sockaddr *getlocaladdr(struct sockaddr *remote)
 int recvfromto(int s, void *buf, size_t len, int flags, struct sockaddr *from,
                socklen_t *fromlen, struct sockaddr *to, unsigned int *tolen)
 {   
-    *tolen = sizeof(struct sockaddr_storage);
     if (getsockname(s, to, (socklen_t *)tolen) == -1) {
         return -1;
     }
@@ -171,10 +170,9 @@ int recvfromto(int s, void *buf, size_t len, int flags, struct sockaddr *from,
 int sendfromto(int s, const void *buf, size_t len, struct sockaddr *from,
                struct sockaddr *to, int count)
 {   
-    socklen_t tolen = sysdep_sa_len(to);
     int i;
     for (i = 0; i < count; ++i) {
-        if (sendto(s, buf, len, 0, to, tolen) == -1) {
+        if (sendto(s, buf, len, 0, to, sysdep_sa_len(to)) == -1) {
             return -1;
         }
     }
@@ -195,15 +193,18 @@ int setsockopt_bypass(int s, int family)
     int level = (family == AF_INET) ? IPPROTO_IP : IPPROTO_IPV6;
     int option = (family == AF_INET) ? IP_IPSEC_POLICY : IPV6_IPSEC_POLICY;
     int len = PFKEY_EXTLEN(&p);
-    if (setsockopt(s, level, option, &p, len) == -1 ||
-        (p.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND,
-         setsockopt(s, level, option, &p, len) == -1)) {
-        plog(LLV_ERROR, LOCATION, NULL, "setsockopt_bypass() %s\n", strerror(errno));
-        return -1;
+    if (setsockopt(s, level, option, &p, len) == -1) {
+        plog(LLV_WARNING, LOCATION, NULL, "setsockopt in bypass: %s\n",
+                strerror(errno));
+    }
+    p.sadb_x_policy_dir = IPSEC_DIR_OUTBOUND;
+    if (setsockopt(s, level, option, &p, len) == -1) {
+        plog(LLV_WARNING, LOCATION, NULL, "setsockopt out bypass: %s\n",
+                strerror(errno));
     }
     return 0;
 }
- 
+
 #else
 
 /* get local address against the destination. */
