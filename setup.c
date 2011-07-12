@@ -456,14 +456,14 @@ void setup(int argc, char **argv)
     set_port(myaddrs[0].addr, localconf.port_isakmp);
     myaddrs[0].fd = isakmp_open(myaddrs[0].addr, FALSE);
     if (myaddrs[0].fd == -1) {
-        do_plog(LLV_ERROR, "Cannot create ISAKMP socket");
+        do_plog(LLV_ERROR, "Cannot create ISAKMP socket\n");
         exit(1);
     }
 #ifdef ENABLE_NATT
     set_port(myaddrs[1].addr, localconf.port_isakmp_natt);
     myaddrs[1].fd = isakmp_open(myaddrs[1].addr, TRUE);
     if (myaddrs[1].fd == -1) {
-        do_plog(LLV_WARNING, "Cannot create ISAKMP socket for NAT-T");
+        do_plog(LLV_WARNING, "Cannot create ISAKMP socket for NAT-T\n");
     }
 #endif
 
@@ -518,31 +518,6 @@ int myaddr_getfd(struct sockaddr *addr)
     return -1;
 }
 
-/* misc.h */
-
-int racoon_hexdump(void *data, size_t length)
-{
-    return 0;
-}
-
-void close_on_exec(int fd)
-{
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-}
-
-/* sainfo.h */
-
-struct sainfo *getsainfo(const vchar_t *src, const vchar_t *dst,
-        const vchar_t *peer, const vchar_t *client, uint32_t remoteid)
-{
-    return &sainfo;
-}
-
-const char *sainfo2str(const struct sainfo *si)
-{
-    return "*";
-}
-
 /* privsep.h */
 
 int privsep_socket(int domain, int type, int protocol)
@@ -550,7 +525,7 @@ int privsep_socket(int domain, int type, int protocol)
     int fd = socket(domain, type, protocol);
     if ((domain == AF_INET || domain == AF_INET6) && setsockopt(
             fd, SOL_SOCKET, SO_BINDTODEVICE, interface, strlen(interface))) {
-        do_plog(LLV_WARNING, "Cannot bind socket to %s", interface);
+        do_plog(LLV_WARNING, "Cannot bind socket to %s\n", interface);
     }
     return fd;
 }
@@ -579,6 +554,31 @@ int privsep_accounting_system(int port, struct sockaddr *addr,
 int privsep_xauth_login_system(char *user, char *password)
 {
     return -1;
+}
+
+/* misc.h */
+
+int racoon_hexdump(void *data, size_t length)
+{
+    return 0;
+}
+
+void close_on_exec(int fd)
+{
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+}
+
+/* sainfo.h */
+
+struct sainfo *getsainfo(const vchar_t *src, const vchar_t *dst,
+        const vchar_t *peer, const vchar_t *client, uint32_t remoteid)
+{
+    return &sainfo;
+}
+
+const char *sainfo2str(const struct sainfo *si)
+{
+    return "*";
 }
 
 /* throttle.h */
