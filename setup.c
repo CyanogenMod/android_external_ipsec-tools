@@ -32,6 +32,7 @@
 #include "var.h"
 #include "isakmp_var.h"
 #include "isakmp.h"
+#include "isakmp_xauth.h"
 #include "vmbuf.h"
 #include "crypto_openssl.h"
 #include "oakley.h"
@@ -293,9 +294,67 @@ static void add_proposal(struct remoteconf *remoteconf,
     }
 }
 
+static vchar_t *get_certificate(char *type, char *file)
+{
+    char path[PATH_MAX + 1];
+    vchar_t *certificate = NULL;
+
+    getpathname(path, sizeof(path), LC_PATHTYPE_CERT, file);
+    certificate = eay_get_x509cert(path);
+    if (!certificate) {
+        do_plog(LLV_ERROR, "Cannot load %s certificate\n", type);
+        exit(1);
+    }
+    return certificate;
+}
+
+static void set_certificates(struct remoteconf *remoteconf,
+        char *user_private_key, char *user_certificate, char *ca_certificate)
+{
+    remoteconf->myprivfile = user_private_key;
+    remoteconf->mycertfile = user_certificate;
+    if (user_certificate) {
+        remoteconf->mycert = get_certificate("user", user_certificate);
+    }
+    if (!ca_certificate[0]) {
+        remoteconf->verify_cert = FALSE;
+    } else {
+        remoteconf->cacertfile = ca_certificate;
+        remoteconf->cacert = get_certificate("CA", ca_certificate);
+    }
+    remoteconf->idvtype = IDTYPE_ASN1DN;
+}
+
+static vchar_t *strtovchar(char *string)
+{
+    vchar_t *vchar = string ? vmalloc(strlen(string)) : NULL;
+    if (vchar) {
+        memcpy(vchar->v, string, vchar->l);
+    }
+    return vchar;
+}
+
+#ifdef ENABLE_HYBRID
+
+static void set_xauth_and_more(struct remoteconf *remoteconf,
+        char *username, char *password, char *phase1_up, char *script_arg)
+{
+    struct xauth_rmconf *xauth = racoon_calloc(1, sizeof(struct xauth_rmconf));
+    xauth->login = vmalloc(strlen(username) + 1);
+    memcpy(xauth->login->v, username, xauth->login->l);
+    xauth->pass = vmalloc(strlen(password) + 1);
+    memcpy(xauth->pass->v, password, xauth->pass->l);
+    remoteconf->xauth = xauth;
+    remoteconf->mode_cfg = TRUE;
+    remoteconf->script[SCRIPT_PHASE1_UP] = strtovchar(phase1_up);
+    script_names[SCRIPT_PHASE1_UP] = script_arg;
+}
+
+#endif
+
 void setup(int argc, char **argv)
 {
-    struct remoteconf *remoteconf;
+    struct remoteconf *remoteconf = NULL;
     int auth;
 
     if (argc > 2) {
@@ -328,42 +387,51 @@ void setup(int argc, char **argv)
 
     /* Set authentication method and credentials. */
     if (argc == 6 && !strcmp(argv[3], "udppsk")) {
-        set_port(target, atoi(argv[4]));
-        spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
-        pre_shared_key = argv[5];
+        pre_shared_key = argv[4];
         remoteconf->idvtype = IDTYPE_ADDRESS;
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
-    } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
-        char path[PATH_MAX + 1];
-        set_port(target, atoi(argv[4]));
+
+        set_port(target, atoi(argv[5]));
         spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
-        remoteconf->myprivfile = argv[5];
-        remoteconf->mycertfile = argv[6];
-        getpathname(path, sizeof(path), LC_PATHTYPE_CERT, argv[6]);
-        remoteconf->mycert = eay_get_x509cert(path);
-        if (!remoteconf->mycert) {
-            do_plog(LLV_ERROR, "Cannot load user certificate\n");
-            exit(1);
-        }
-        if (!*argv[7]) {
-            remoteconf->verify_cert = FALSE;
-        } else {
-            remoteconf->cacertfile = argv[7];
-            getpathname(path, sizeof(path), LC_PATHTYPE_CERT, argv[7]);
-            remoteconf->cacert = eay_get_x509cert(path);
-            if (!remoteconf->cacert) {
-                do_plog(LLV_ERROR, "Cannot load CA certificate\n");
-                exit(1);
-            }
-        }
-        remoteconf->idvtype = IDTYPE_ASN1DN;
+    } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
+        set_certificates(remoteconf, argv[4], argv[5], argv[6]);
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
+
+        set_port(target, atoi(argv[7]));
+        spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
+#ifdef ENABLE_HYBRID
+    } else if (argc == 10 && !strcmp(argv[3], "xauthpsk")) {
+        pre_shared_key = argv[5];
+        remoteconf->idvtype = IDTYPE_ADDRESS;
+        if (*argv[4]) {
+            remoteconf->idv = strtovchar(argv[4]);
+            /* We might want to add some heuristics to detect the type? */
+            remoteconf->idvtype = IDTYPE_KEYID;
+        }
+        set_xauth_and_more(remoteconf, argv[6], argv[7], argv[8], argv[9]);
+        auth = OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I;
+    } else if (argc == 11 && !strcmp(argv[3], "xauthrsa")) {
+        set_certificates(remoteconf, argv[4], argv[5], argv[6]);
+        set_xauth_and_more(remoteconf, argv[7], argv[8], argv[9], argv[10]);
+        auth = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I;
+    } else if (argc == 9 && !strcmp(argv[3], "hybridrsa")) {
+        set_certificates(remoteconf, NULL, NULL, argv[4]);
+        set_xauth_and_more(remoteconf, argv[5], argv[6], argv[7], argv[8]);
+        auth = OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I;
+#endif
     } else {
-        printf("Usage: %s <interface> <server> [...],\n"
-               "    where [...] can be:\n"
-               "    udppsk <port> <pre-shared-key>\n"
-               "    udprsa <port> <user-private-key> <user-cert> <ca-cert>\n",
-               argv[0]);
+        printf("Usage: %s <interface> <server> [...], where [...] can be:\n"
+                " udppsk    <pre-shared-key> <port>\n"
+                " udprsa    <user-private-key> <user-cert> <ca-cert> <port>\n"
+#ifdef ENABLE_HYBRID
+                " xauthpsk  <identifier> <pre-shared-key>"
+                        " <username> <password> <phase1-up> <script-arg>\n"
+                " xauthrsa  <user-private-key> <user-cert> <ca-cert>"
+                        " <username> <password> <phase1-up> <script-arg>\n"
+                " hybridrsa <ca-cert>"
+                        " <username> <password> <phase1-up> <script-arg>\n"
+#endif
+                "", argv[0]);
         exit(0);
     }
 
@@ -398,6 +466,11 @@ void setup(int argc, char **argv)
         do_plog(LLV_WARNING, "Cannot create ISAKMP socket for NAT-T");
     }
 #endif
+
+    /* Start phase 1 negotiation for xauth. */
+    if (remoteconf->xauth) {
+        isakmp_ph1begin_i(remoteconf, remoteconf->remote, myaddrs[0].addr);
+    }
 }
 
 /*****************************************************************************/
@@ -406,11 +479,7 @@ void setup(int argc, char **argv)
 
 vchar_t *getpskbyaddr(struct sockaddr *addr)
 {
-    vchar_t *p = NULL;
-    if (pre_shared_key && (p = vmalloc(strlen(pre_shared_key)))) {
-        memcpy(p->v, pre_shared_key, p->l);
-    }
-    return p;
+    return strtovchar(pre_shared_key);
 }
 
 vchar_t *getpskbyname(vchar_t *name)
@@ -496,9 +565,9 @@ vchar_t *privsep_eay_get_pkcs1privkey(char *file)
     return eay_get_pkcs1privkey(file);
 }
 
-int privsep_script_exec(char *script, int name, char * const *environ)
+int privsep_script_exec(char *script, int name, char * const *envp)
 {
-    return 0;
+    return script_exec(script, name, envp);
 }
 
 int privsep_accounting_system(int port, struct sockaddr *addr,
