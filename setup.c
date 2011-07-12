@@ -59,11 +59,11 @@ static struct sainfo sainfo;
 static char *pre_shared_key;
 
 static char *interface;
-static struct sockaddr *target;
+static struct sockaddr *targets[2];
 static struct {
     struct sockaddr *addr;
     int fd;
-} myaddrs[2];
+} sources[2];
 
 struct localconf *lcconf = &localconf;
 char *script_names[SCRIPT_MAX + 1];
@@ -101,27 +101,27 @@ static void set_globals(char *interfaze, char *server)
     };
     struct addrinfo *info;
 
-    if (getaddrinfo(server, "80", &hints, &info) != 0) {
+    if (getaddrinfo(server, "500", &hints, &info) != 0) {
         do_plog(LLV_ERROR, "Cannot resolve address: %s\n", server);
         exit(1);
     }
     if (info->ai_next) {
         do_plog(LLV_WARNING, "Found multiple addresses. Use the first one.\n");
     }
-    target = dupsaddr(info->ai_addr);
+    targets[0] = dupsaddr(info->ai_addr);
     freeaddrinfo(info);
 
     interface = interfaze;
-    myaddrs[0].addr = getlocaladdr(target);
-    if (!myaddrs[0].addr) {
+    sources[0].addr = getlocaladdr(targets[0]);
+    if (!sources[0].addr) {
         do_plog(LLV_ERROR, "Cannot get local address\n");
         exit(1);
     }
-    set_port(target, 0);
-    set_port(myaddrs[0].addr, 0);
-    myaddrs[0].fd = -1;
-    myaddrs[1].addr = dupsaddr(myaddrs[0].addr);
-    myaddrs[1].fd = -1;
+    set_port(targets[0], 0);
+    set_port(sources[0].addr, 0);
+    sources[0].fd = -1;
+    sources[1].addr = dupsaddr(sources[0].addr);
+    sources[1].fd = -1;
 
     localconf.port_isakmp = PORT_ISAKMP;
     localconf.port_isakmp_natt = PORT_ISAKMP_NATT;
@@ -153,7 +153,9 @@ static void set_globals(char *interfaze, char *server)
 static int policy_match(struct sadb_address *address)
 {
     if (address) {
-        return cmpsaddr(PFKEY_ADDR_SADDR(address), target) < CMPSADDR_MISMATCH;
+        struct sockaddr *addr = PFKEY_ADDR_SADDR(address);
+        return cmpsaddr(addr, targets[0]) < CMPSADDR_MISMATCH ||
+                cmpsaddr(addr, targets[1]) < CMPSADDR_MISMATCH;
     }
     return 0;
 }
@@ -167,7 +169,7 @@ static void flush()
 
     if (pfkey_send_dump(key, SADB_SATYPE_UNSPEC) <= 0 ||
         pfkey_send_spddump(key) <= 0) {
-        do_plog(LLV_ERROR, "Cannot dump SAD and SPD");
+        do_plog(LLV_ERROR, "Cannot dump SAD and SPD\n");
         exit(1);
     }
 
@@ -243,9 +245,8 @@ static void spdadd(struct sockaddr *src, struct sockaddr *dst,
         memcpy(&policy.addresses[length], remote, length);
         length += length;
 
-        /* Use the source address to flush policies. */
-        racoon_free(target);
-        target = dupsaddr(src);
+        /* Also use the source address to filter policies. */
+        targets[1] = dupsaddr(src);
     }
 
     /* Fix lengths. */
@@ -381,7 +382,7 @@ void setup(int argc, char **argv)
         remoteconf->pcheck_level = PROP_CHECK_OBEY;
         remoteconf->gen_policy = TRUE;
         remoteconf->nat_traversal = TRUE;
-        remoteconf->remote = dupsaddr(target);
+        remoteconf->remote = dupsaddr(targets[0]);
         set_port(remoteconf->remote, localconf.port_isakmp);
     }
 
@@ -391,14 +392,14 @@ void setup(int argc, char **argv)
         remoteconf->idvtype = IDTYPE_ADDRESS;
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
 
-        set_port(target, atoi(argv[5]));
-        spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
+        set_port(targets[0], atoi(argv[5]));
+        spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
     } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
         set_certificates(remoteconf, argv[4], argv[5], argv[6]);
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
 
-        set_port(target, atoi(argv[7]));
-        spdadd(myaddrs[0].addr, target, IPPROTO_UDP, NULL, NULL);
+        set_port(targets[0], atoi(argv[7]));
+        spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
 #ifdef ENABLE_HYBRID
     } else if (argc == 10 && !strcmp(argv[3], "xauthpsk")) {
         pre_shared_key = argv[5];
@@ -453,23 +454,23 @@ void setup(int argc, char **argv)
     insrmconf(remoteconf);
 
     /* Create ISAKMP sockets. */
-    set_port(myaddrs[0].addr, localconf.port_isakmp);
-    myaddrs[0].fd = isakmp_open(myaddrs[0].addr, FALSE);
-    if (myaddrs[0].fd == -1) {
+    set_port(sources[0].addr, localconf.port_isakmp);
+    sources[0].fd = isakmp_open(sources[0].addr, FALSE);
+    if (sources[0].fd == -1) {
         do_plog(LLV_ERROR, "Cannot create ISAKMP socket\n");
         exit(1);
     }
 #ifdef ENABLE_NATT
-    set_port(myaddrs[1].addr, localconf.port_isakmp_natt);
-    myaddrs[1].fd = isakmp_open(myaddrs[1].addr, TRUE);
-    if (myaddrs[1].fd == -1) {
+    set_port(sources[1].addr, localconf.port_isakmp_natt);
+    sources[1].fd = isakmp_open(sources[1].addr, TRUE);
+    if (sources[1].fd == -1) {
         do_plog(LLV_WARNING, "Cannot create ISAKMP socket for NAT-T\n");
     }
 #endif
 
     /* Start phase 1 negotiation for xauth. */
     if (remoteconf->xauth) {
-        isakmp_ph1begin_i(remoteconf, remoteconf->remote, myaddrs[0].addr);
+        isakmp_ph1begin_i(remoteconf, remoteconf->remote, sources[0].addr);
     }
 }
 
@@ -507,13 +508,13 @@ int myaddr_getsport(struct sockaddr *addr)
 int myaddr_getfd(struct sockaddr *addr)
 {
 #ifdef ENABLE_NATT
-    if (myaddrs[1].fd != -1 &&
-            cmpsaddr(addr, myaddrs[1].addr) == CMPSADDR_MATCH) {
-        return myaddrs[1].fd;
+    if (sources[1].fd != -1 &&
+            cmpsaddr(addr, sources[1].addr) == CMPSADDR_MATCH) {
+        return sources[1].fd;
     }
 #endif
-    if (cmpsaddr(addr, myaddrs[0].addr) < CMPSADDR_MISMATCH) {
-        return myaddrs[0].fd;
+    if (cmpsaddr(addr, sources[0].addr) < CMPSADDR_MISMATCH) {
+        return sources[0].fd;
     }
     return -1;
 }
