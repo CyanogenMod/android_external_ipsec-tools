@@ -20,15 +20,6 @@
 #include <signal.h>
 #include <poll.h>
 
-#ifdef ANDROID_CHANGES
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <android/log.h>
-#include <cutils/sockets.h>
-#include <private/android_filesystem_config.h>
-#endif
-
 #include "config.h"
 #include "gcmalloc.h"
 #include "session.h"
@@ -36,6 +27,20 @@
 #include "plog.h"
 
 #ifdef ANDROID_CHANGES
+
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
+#include <android/log.h>
+#include <cutils/sockets.h>
+#include <private/android_filesystem_config.h>
 
 static int get_control_and_arguments(int *argc, char ***argv)
 {
@@ -85,6 +90,27 @@ static int get_control_and_arguments(int *argc, char ***argv)
     *argc = i;
     *argv = args;
     return control;
+}
+
+void android_setenv(char ***envp)
+{
+    int tun = open("/dev/tun", 0);
+    struct ifreq ifr = {.ifr_flags = IFF_TUN};
+    char env[16 + sizeof(ifr.ifr_name)];
+    int i = 0;
+
+    if (ioctl(tun, TUNSETIFF, &ifr)) {
+        do_plog(LLV_ERROR, "Cannot allocate TUN: %s\n", strerror(errno));
+        exit(1);
+    }
+    snprintf(env, sizeof(env), "INTERFACE=%s", ifr.ifr_name);
+
+    while ((*envp)[i]) {
+        ++i;
+    }
+    *envp = racoon_realloc(*envp, sizeof(char *) * (i + 1));
+    (*envp)[i] = racoon_strdup(env);
+    (*envp)[i + 1] = NULL;
 }
 
 #endif

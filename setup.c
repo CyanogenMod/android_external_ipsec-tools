@@ -328,7 +328,7 @@ static void set_certificates(struct remoteconf *remoteconf,
 
 static vchar_t *strtovchar(char *string)
 {
-    vchar_t *vchar = string ? vmalloc(strlen(string)) : NULL;
+    vchar_t *vchar = string ? vmalloc(strlen(string) + 1) : NULL;
     if (vchar) {
         memcpy(vchar->v, string, vchar->l);
     }
@@ -341,10 +341,8 @@ static void set_xauth_and_more(struct remoteconf *remoteconf,
         char *username, char *password, char *phase1_up, char *script_arg)
 {
     struct xauth_rmconf *xauth = racoon_calloc(1, sizeof(struct xauth_rmconf));
-    xauth->login = vmalloc(strlen(username) + 1);
-    memcpy(xauth->login->v, username, xauth->login->l);
-    xauth->pass = vmalloc(strlen(password) + 1);
-    memcpy(xauth->pass->v, password, xauth->pass->l);
+    xauth->login = strtovchar(username);
+    xauth->pass = strtovchar(password);
     remoteconf->xauth = xauth;
     remoteconf->mode_cfg = TRUE;
     remoteconf->script[SCRIPT_PHASE1_UP] = strtovchar(phase1_up);
@@ -550,6 +548,8 @@ static char *get_env(char * const *envp, char *key)
     return *envp ? &(*envp)[length + 1] : "";
 }
 
+extern void android_setenv(char ***envp);
+
 int privsep_script_exec(char *script, int name, char * const *envp)
 {
     /* Racoon ignores INTERNAL_IP6_ADDRESS, so we only do IPv4. */
@@ -560,6 +560,9 @@ int privsep_script_exec(char *script, int name, char * const *envp)
             get_env(envp, "REMOTE_PORT"));
 
     if (addr4 && local && remote) {
+#ifdef ANDROID_CHANGES
+        android_setenv((char ***)&envp);
+#endif
         spdadd(addr4, NULL, IPPROTO_IP, local, remote);
     } else {
         do_plog(LLV_ERROR, "Cannot find parameters to generate SPD policy.\n");
