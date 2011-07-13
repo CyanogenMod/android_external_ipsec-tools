@@ -34,7 +34,7 @@ LOCAL_SRC_FILES := \
 	src/racoon/isakmp_quick.c \
 	src/racoon/isakmp_unity.c \
 	src/racoon/isakmp_xauth.c \
-	src/racoon/ipsec_doi-0.7.3.c \
+	src/racoon/ipsec_doi.c \
 	src/racoon/nattraversal.c \
 	src/racoon/oakley.c \
 	src/racoon/pfkey.c \

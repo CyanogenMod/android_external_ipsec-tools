@@ -3200,9 +3200,13 @@ ipsecdoi_transportmode(pp)
 
 	for (; pp; pp = pp->next) {
 		for (pr = pp->head; pr; pr = pr->next) {
+#ifdef ANDROID_PATCHED
+			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS)
+#else
 			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS &&
 			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC &&
 			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_DRAFT)
+#endif
 				return 0;
 		}
 	}

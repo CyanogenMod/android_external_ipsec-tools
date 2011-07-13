@@ -217,11 +217,7 @@ extern int ipsecdoi_selectph2proposal __P((struct ph2handle *));
 extern int ipsecdoi_checkph2proposal __P((struct ph2handle *));
 
 extern struct prop_pair **get_proppair __P((vchar_t *, int));
-#ifdef ANDROID_PATCHED
-extern vchar_t *get_sabyproppair __P((struct prop_pair *, struct ph1handle *));
-#else
 extern vchar_t *get_sabyproppair __P((u_int32_t, u_int32_t, struct prop_pair *));
-#endif
 extern int ipsecdoi_updatespi __P((struct ph2handle *iph2));
 extern vchar_t *get_sabysaprop __P((struct saprop *, vchar_t *));
 extern int ipsecdoi_chkcmpids( const vchar_t *, const vchar_t *, int );
