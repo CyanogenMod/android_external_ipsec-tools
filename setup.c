@@ -548,31 +548,40 @@ static char *get_env(char * const *envp, char *key)
     return *envp ? &(*envp)[length + 1] : "";
 }
 
+static int skip_script = 0;
 extern void android_setenv(char ***envp);
 
 int privsep_script_exec(char *script, int name, char * const *envp)
 {
-    /* Racoon ignores INTERNAL_IP6_ADDRESS, so we only do IPv4. */
-    struct sockaddr *addr4 = str2saddr(get_env(envp, "INTERNAL_ADDR4"), NULL);
-    struct sockaddr *local = str2saddr(get_env(envp, "LOCAL_ADDR"),
-            get_env(envp, "LOCAL_PORT"));
-    struct sockaddr *remote = str2saddr(get_env(envp, "REMOTE_ADDR"),
-            get_env(envp, "REMOTE_PORT"));
-
-    if (addr4 && local && remote) {
-#ifdef ANDROID_CHANGES
-        android_setenv((char ***)&envp);
-#endif
-        spdadd(addr4, NULL, IPPROTO_IP, local, remote);
+    if (skip_script) {
+        do_plog(LLV_WARNING,
+                "Phase 1 is up again. This time skip executing the script.\n");
     } else {
-        do_plog(LLV_ERROR, "Cannot find parameters to generate SPD policy.\n");
-        exit(1);
-    }
+        /* Racoon ignores INTERNAL_IP6_ADDRESS, so we only do IPv4. */
+        struct sockaddr *addr4 = str2saddr(get_env(envp, "INTERNAL_ADDR4"),
+                NULL);
+        struct sockaddr *local = str2saddr(get_env(envp, "LOCAL_ADDR"),
+                get_env(envp, "LOCAL_PORT"));
+        struct sockaddr *remote = str2saddr(get_env(envp, "REMOTE_ADDR"),
+                get_env(envp, "REMOTE_PORT"));
 
-    racoon_free(addr4);
-    racoon_free(local);
-    racoon_free(remote);
-    return script ? script_exec(script, name, envp) : -1;
+        if (addr4 && local && remote) {
+#ifdef ANDROID_CHANGES
+            android_setenv((char ***)&envp);
+#endif
+            spdadd(addr4, NULL, IPPROTO_IP, local, remote);
+        } else {
+            do_plog(LLV_ERROR, "Cannot get parameters for SPD policy.\n");
+            exit(1);
+        }
+
+        skip_script = 1;
+        racoon_free(addr4);
+        racoon_free(local);
+        racoon_free(remote);
+        return script_exec(script, name, envp);
+    }
+    return 0;
 }
 
 int privsep_accounting_system(int port, struct sockaddr *addr,
