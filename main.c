@@ -42,7 +42,7 @@
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
 
-static int get_control_and_arguments(int *argc, char ***argv)
+static int android_get_arguments_and_control(int *argc, char ***argv)
 {
     static char *args[32];
     int control;
@@ -139,20 +139,26 @@ static void terminated()
 int main(int argc, char **argv)
 {
 #ifdef ANDROID_CHANGES
-    int control = get_control_and_arguments(&argc, &argv);
+    int control = android_get_arguments_and_control(&argc, &argv);
     if (control != -1) {
         pname = "%p";
     }
 #endif
 
     do_plog(LLV_INFO, "ipsec-tools 0.8.0 (http://ipsec-tools.sf.net)\n");
-    setup(argc, argv);
 
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
     signal(SIGPIPE, SIG_IGN);
     atexit(terminated);
+
+    setup(argc, argv);
+
+#ifdef ANDROID_CHANGES
+    close(control);
+    setuid(AID_VPN);
+#endif
 
     while (1) {
         struct timeval *tv = schedular();
