@@ -541,9 +541,35 @@ vchar_t *privsep_eay_get_pkcs1privkey(char *file)
     return eay_get_pkcs1privkey(file);
 }
 
+static char *get_env(char * const *envp, char *key)
+{
+    int length = strlen(key);
+    while (*envp && (strncmp(*envp, key, length) || (*envp)[length] != '=')) {
+        ++envp;
+    }
+    return *envp ? &(*envp)[length + 1] : "";
+}
+
 int privsep_script_exec(char *script, int name, char * const *envp)
 {
-    return script_exec(script, name, envp);
+    /* Racoon ignores INTERNAL_IP6_ADDRESS, so we only do IPv4. */
+    struct sockaddr *addr4 = str2saddr(get_env(envp, "INTERNAL_ADDR4"), NULL);
+    struct sockaddr *local = str2saddr(get_env(envp, "LOCAL_ADDR"),
+            get_env(envp, "LOCAL_PORT"));
+    struct sockaddr *remote = str2saddr(get_env(envp, "REMOTE_ADDR"),
+            get_env(envp, "REMOTE_PORT"));
+
+    if (addr4 && local && remote) {
+        spdadd(addr4, NULL, IPPROTO_IP, local, remote);
+    } else {
+        do_plog(LLV_ERROR, "Cannot find parameters to generate SPD policy.\n");
+        exit(1);
+    }
+
+    racoon_free(addr4);
+    racoon_free(local);
+    racoon_free(remote);
+    return script ? script_exec(script, name, envp) : -1;
 }
 
 int privsep_accounting_system(int port, struct sockaddr *addr,
