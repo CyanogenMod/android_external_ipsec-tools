@@ -598,19 +598,7 @@ quick_i2recv(iph2, msg0)
 		goto end;
 	}
 
-#ifdef ANDROID_PATCHED
-        if (idcr != NULL) {
-                struct ipsecdoi_id_b *id_b = idcr->v;
-                if (id_b->type != IPSECDOI_ID_IPV4_ADDR &&
-                    id_b->type != IPSECDOI_ID_IPV4_ADDR_SUBNET &&
-                    id_b->type != IPSECDOI_ID_IPV6_ADDR &&
-                    id_b->type != IPSECDOI_ID_IPV6_ADDR_SUBNET) {
-                        vfree(idcr);
-                        idcr = NULL;
-                }
-        }
-#endif
-
+#ifndef ANDROID_PATCHED
 	/* identity check */
 	if (idci != NULL) {
 		struct sockaddr_storage proposed_addr, got_addr;
@@ -652,13 +640,11 @@ quick_i2recv(iph2, msg0)
 			plog(LLV_DEBUG, LOCATION, NULL,
 				"IDci matches NAT-OAi.\n");
 #endif
-#ifndef ANDROID_PATCHED
 		} else {
 			plog(LLV_ERROR, LOCATION, NULL,
 				"mismatched IDci was returned.\n");
 			error = ISAKMP_NTYPE_ATTRIBUTES_NOT_SUPPORTED;
 			goto end;
-#endif
 		}
 	}
 	if (idcr != NULL) {
@@ -709,6 +695,7 @@ quick_i2recv(iph2, msg0)
 			goto end;
 		}
 	}
+#endif
 
 	/* Fixed buffer for calculating HASH */
 	memcpy(hbuf->v, iph2->nonce->v, iph2->nonce->l);
