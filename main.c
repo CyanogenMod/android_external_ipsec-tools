@@ -42,7 +42,7 @@
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
 
-static int android_get_arguments_and_control(int *argc, char ***argv)
+static int android_get_control_and_arguments(int *argc, char ***argv)
 {
     static char *args[32];
     int control;
@@ -61,17 +61,17 @@ static int android_get_arguments_and_control(int *argc, char ***argv)
     args[0] = (*argv)[0];
     for (i = 1; i < 32; ++i) {
         unsigned char bytes[2];
-        if (recv(control, &bytes[0], 1, 0) != 1
-            || recv(control, &bytes[1], 1, 0) != 1) {
+        int length = recv(control, &bytes[0], 1, 0);
+
+        if (!length) {
+            break;
+        } else if (length != 1 || recv(control, &bytes[1], 1, 0) != 1) {
             do_plog(LLV_ERROR, "Cannot get argument length");
             exit(1);
         } else {
-            int length = bytes[0] << 8 | bytes[1];
             int offset = 0;
+            length = bytes[0] << 8 | bytes[1];
 
-            if (length == 0xFFFF) {
-                break;
-            }
             args[i] = malloc(length + 1);
             while (offset < length) {
                 int n = recv(control, &args[i][offset], length - offset, 0);
@@ -139,7 +139,7 @@ static void terminated()
 int main(int argc, char **argv)
 {
 #ifdef ANDROID_CHANGES
-    int control = android_get_arguments_and_control(&argc, &argv);
+    int control = android_get_control_and_arguments(&argc, &argv);
     if (control != -1) {
         pname = "%p";
     }
