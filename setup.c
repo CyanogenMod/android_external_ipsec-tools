@@ -143,9 +143,10 @@ static void set_globals(char *interfaze, char *server)
     sainfo.lifebyte = IPSECDOI_ATTR_SA_LD_KB_MAX;
     add_sainfo_algorithm(algclass_ipsec_auth, IPSECDOI_ATTR_AUTH_HMAC_SHA1, 0);
     add_sainfo_algorithm(algclass_ipsec_auth, IPSECDOI_ATTR_AUTH_HMAC_MD5, 0);
+    add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_AES, 256);
+    add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_AES, 128);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_3DES, 0);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_DES, 0);
-    add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_AES, 128);
 }
 
 /*****************************************************************************/
@@ -377,7 +378,7 @@ void setup(int argc, char **argv)
         remoteconf->etypes = racoon_calloc(1, sizeof(struct etypes));
         remoteconf->etypes->type = ISAKMP_ETYPE_IDENT;
         remoteconf->ike_frag = TRUE;
-        remoteconf->pcheck_level = PROP_CHECK_OBEY;
+        remoteconf->pcheck_level = PROP_CHECK_CLAIM;
         remoteconf->gen_policy = TRUE;
         remoteconf->nat_traversal = TRUE;
         remoteconf->remote = dupsaddr(targets[0]);
@@ -436,6 +437,14 @@ void setup(int argc, char **argv)
 
     /* Add proposals. */
     add_proposal(remoteconf, auth,
+            OAKLEY_ATTR_HASH_ALG_SHA, OAKLEY_ATTR_ENC_ALG_AES, 256);
+    add_proposal(remoteconf, auth,
+            OAKLEY_ATTR_HASH_ALG_MD5, OAKLEY_ATTR_ENC_ALG_AES, 256);
+    add_proposal(remoteconf, auth,
+            OAKLEY_ATTR_HASH_ALG_SHA, OAKLEY_ATTR_ENC_ALG_AES, 128);
+    add_proposal(remoteconf, auth,
+            OAKLEY_ATTR_HASH_ALG_MD5, OAKLEY_ATTR_ENC_ALG_AES, 128);
+    add_proposal(remoteconf, auth,
             OAKLEY_ATTR_HASH_ALG_SHA, OAKLEY_ATTR_ENC_ALG_3DES, 0);
     add_proposal(remoteconf, auth,
             OAKLEY_ATTR_HASH_ALG_MD5, OAKLEY_ATTR_ENC_ALG_3DES, 0);
@@ -443,10 +452,6 @@ void setup(int argc, char **argv)
             OAKLEY_ATTR_HASH_ALG_SHA, OAKLEY_ATTR_ENC_ALG_DES, 0);
     add_proposal(remoteconf, auth,
             OAKLEY_ATTR_HASH_ALG_MD5, OAKLEY_ATTR_ENC_ALG_DES, 0);
-    add_proposal(remoteconf, auth,
-            OAKLEY_ATTR_HASH_ALG_SHA, OAKLEY_ATTR_ENC_ALG_AES, 128);
-    add_proposal(remoteconf, auth,
-            OAKLEY_ATTR_HASH_ALG_MD5, OAKLEY_ATTR_ENC_ALG_AES, 128);
 
     /* Install remote configuration. */
     insrmconf(remoteconf);
