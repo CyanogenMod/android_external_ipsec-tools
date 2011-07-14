@@ -92,25 +92,24 @@ static int android_get_control_and_arguments(int *argc, char ***argv)
     return control;
 }
 
-void android_setenv(char ***envp)
+void android_setenv(char **envp)
 {
-    int tun = open("/dev/tun", 0);
     struct ifreq ifr = {.ifr_flags = IFF_TUN};
-    char env[16 + sizeof(ifr.ifr_name)];
-    int i = 0;
+    int tun = open("/dev/tun", 0);
 
+    /* Android does not support INTERNAL_WINS4_LIST, so we just replace it. */
+    while (*envp && strncmp(*envp, "INTERNAL_WINS4_LIST=", 20)) {
+        ++envp;
+    }
+    if (!*envp) {
+        do_plog(LLV_ERROR, "Cannot find environment variable\n");
+        exit(1);
+    }
     if (ioctl(tun, TUNSETIFF, &ifr)) {
         do_plog(LLV_ERROR, "Cannot allocate TUN: %s\n", strerror(errno));
         exit(1);
     }
-    snprintf(env, sizeof(env), "INTERFACE=%s", ifr.ifr_name);
-
-    while ((*envp)[i]) {
-        ++i;
-    }
-    *envp = racoon_realloc(*envp, sizeof(char *) * (i + 1));
-    (*envp)[i] = racoon_strdup(env);
-    (*envp)[i + 1] = NULL;
+    sprintf(*envp, "INTERFACE=%s", ifr.ifr_name);
 }
 
 #endif
