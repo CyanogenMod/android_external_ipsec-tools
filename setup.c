@@ -554,7 +554,7 @@ static char *get_env(char * const *envp, char *key)
 }
 
 static int skip_script = 0;
-extern void android_setenv(char **envp);
+extern const char *android_hook(char **envp);
 
 int privsep_script_exec(char *script, int name, char * const *envp)
 {
@@ -572,7 +572,9 @@ int privsep_script_exec(char *script, int name, char * const *envp)
 
         if (addr4 && local && remote) {
 #ifdef ANDROID_CHANGES
-            android_setenv((char **)envp);
+            if (pname) {
+                script = (char *)android_hook((char **)envp);
+            }
 #endif
             spdadd(addr4, NULL, IPPROTO_IP, local, remote);
         } else {

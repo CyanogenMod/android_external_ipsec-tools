@@ -92,12 +92,12 @@ static int android_get_control_and_arguments(int *argc, char ***argv)
     return control;
 }
 
-void android_setenv(char **envp)
+const char *android_hook(char **envp)
 {
     struct ifreq ifr = {.ifr_flags = IFF_TUN};
     int tun = open("/dev/tun", 0);
 
-    /* Android does not support INTERNAL_WINS4_LIST, so we just replace it. */
+    /* Android does not support INTERNAL_WINS4_LIST, so we just use it. */
     while (*envp && strncmp(*envp, "INTERNAL_WINS4_LIST=", 20)) {
         ++envp;
     }
@@ -110,6 +110,7 @@ void android_setenv(char **envp)
         exit(1);
     }
     sprintf(*envp, "INTERFACE=%s", ifr.ifr_name);
+    return "/etc/ppp/ip-up-vpn";
 }
 
 #endif
