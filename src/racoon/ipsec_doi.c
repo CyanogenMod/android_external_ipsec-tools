@@ -3200,13 +3200,9 @@ ipsecdoi_transportmode(pp)
 
 	for (; pp; pp = pp->next) {
 		for (pr = pp->head; pr; pr = pr->next) {
-#ifdef ANDROID_PATCHED
-			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS)
-#else
 			if (pr->encmode != IPSECDOI_ATTR_ENC_MODE_TRNS &&
 			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_RFC &&
 			    pr->encmode != IPSECDOI_ATTR_ENC_MODE_UDPTRNS_DRAFT)
-#endif
 				return 0;
 		}
 	}
@@ -3971,7 +3967,11 @@ ipsecdoi_setid2(iph2)
 		s_ipsecdoi_ident(((struct ipsecdoi_id_b *)iph2->id->v)->type));
 
 	/* remote side */
+#ifdef ANDROID_PATCHED
+	if (1)
+#else
 	if (!ipsecdoi_transportmode(iph2->proposal))
+#endif
 		iph2->id_p = ipsecdoi_sockaddr2id((struct sockaddr *)&sp->spidx.dst,
 				sp->spidx.prefd, sp->spidx.ul_proto);
 	else if (iph2->sa_dst != NULL) {
