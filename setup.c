@@ -296,6 +296,34 @@ static void add_proposal(struct remoteconf *remoteconf,
     }
 }
 
+static vchar_t *strtovchar(char *string)
+{
+    vchar_t *vchar = string ? vmalloc(strlen(string) + 1) : NULL;
+    if (vchar) {
+        memcpy(vchar->v, string, vchar->l);
+    }
+    return vchar;
+}
+
+static void set_pre_shared_key(struct remoteconf *remoteconf,
+        char *identifier, char *key)
+{
+    pre_shared_key = key;
+    if (identifier[0]) {
+        remoteconf->idv = strtovchar(identifier);
+        remoteconf->idv->l -= 1;
+        remoteconf->etypes->type = ISAKMP_ETYPE_AGG;
+
+        remoteconf->idvtype = IDTYPE_KEYID;
+        if (strchr(identifier, '.')) {
+            remoteconf->idvtype = IDTYPE_FQDN;
+            if (strchr(identifier, '@')) {
+                remoteconf->idvtype = IDTYPE_USERFQDN;
+            }
+        }
+    }
+}
+
 static vchar_t *get_certificate(char *type, char *file)
 {
     char path[PATH_MAX + 1];
@@ -316,6 +344,7 @@ static void set_certificates(struct remoteconf *remoteconf,
     remoteconf->myprivfile = user_private_key;
     remoteconf->mycertfile = user_certificate;
     if (user_certificate) {
+        remoteconf->idvtype = IDTYPE_ASN1DN;
         remoteconf->mycert = get_certificate("user", user_certificate);
     }
     if (!ca_certificate[0]) {
@@ -324,16 +353,6 @@ static void set_certificates(struct remoteconf *remoteconf,
         remoteconf->cacertfile = ca_certificate;
         remoteconf->cacert = get_certificate("CA", ca_certificate);
     }
-    remoteconf->idvtype = IDTYPE_ASN1DN;
-}
-
-static vchar_t *strtovchar(char *string)
-{
-    vchar_t *vchar = string ? vmalloc(strlen(string) + 1) : NULL;
-    if (vchar) {
-        memcpy(vchar->v, string, vchar->l);
-    }
-    return vchar;
 }
 
 #ifdef ENABLE_HYBRID
@@ -377,21 +396,23 @@ void setup(int argc, char **argv)
         remoteconf = newrmconf();
         remoteconf->etypes = racoon_calloc(1, sizeof(struct etypes));
         remoteconf->etypes->type = ISAKMP_ETYPE_IDENT;
+        remoteconf->idvtype = IDTYPE_ADDRESS;
         remoteconf->ike_frag = TRUE;
         remoteconf->pcheck_level = PROP_CHECK_CLAIM;
         remoteconf->gen_policy = TRUE;
         remoteconf->nat_traversal = TRUE;
+        remoteconf->dh_group = OAKLEY_ATTR_GRP_DESC_MODP1024;
+        oakley_setdhgroup(remoteconf->dh_group, &remoteconf->dhgrp);
         remoteconf->remote = dupsaddr(targets[0]);
         set_port(remoteconf->remote, localconf.port_isakmp);
     }
 
     /* Set authentication method and credentials. */
-    if (argc == 6 && !strcmp(argv[3], "udppsk")) {
-        pre_shared_key = argv[4];
-        remoteconf->idvtype = IDTYPE_ADDRESS;
+    if (argc == 7 && !strcmp(argv[3], "udppsk")) {
+        set_pre_shared_key(remoteconf, argv[4], argv[5]);
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
 
-        set_port(targets[0], atoi(argv[5]));
+        set_port(targets[0], atoi(argv[6]));
         spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
     } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
         set_certificates(remoteconf, argv[4], argv[5], argv[6]);
@@ -401,13 +422,7 @@ void setup(int argc, char **argv)
         spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
 #ifdef ENABLE_HYBRID
     } else if (argc == 10 && !strcmp(argv[3], "xauthpsk")) {
-        pre_shared_key = argv[5];
-        remoteconf->idvtype = IDTYPE_ADDRESS;
-        if (*argv[4]) {
-            remoteconf->idv = strtovchar(argv[4]);
-            /* We might want to add some heuristics to detect the type? */
-            remoteconf->idvtype = IDTYPE_KEYID;
-        }
+        set_pre_shared_key(remoteconf, argv[4], argv[5]);
         set_xauth_and_more(remoteconf, argv[6], argv[7], argv[8], argv[9]);
         auth = OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I;
     } else if (argc == 11 && !strcmp(argv[3], "xauthrsa")) {
@@ -421,7 +436,7 @@ void setup(int argc, char **argv)
 #endif
     } else {
         printf("Usage: %s <interface> <server> [...], where [...] can be:\n"
-                " udppsk    <pre-shared-key> <port>\n"
+                " udppsk    <identifier> <pre-shared-key> <port>\n"
                 " udprsa    <user-private-key> <user-cert> <ca-cert> <port>\n"
 #ifdef ENABLE_HYBRID
                 " xauthpsk  <identifier> <pre-shared-key>"
