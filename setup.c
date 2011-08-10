@@ -199,9 +199,11 @@ static void flush()
     pfkey_close(key);
 }
 
-/* flush; spdflush;
- * spdadd src dst protocol -P out ipsec esp/transport//require; OR
- * spdadd src any protocol -P out ipsec esp/tunnel/local-remote/require; */
+/* spdadd src dst protocol -P out ipsec esp/transport//require;
+ * spdadd dst src protocol -P in  ipsec esp/transport//require;
+ * or
+ * spdadd src any protocol -P out ipsec esp/tunnel/local-remote/require;
+ * spdadd any src protocol -P in  ipsec esp/tunnel/remote-local/require; */
 static void spdadd(struct sockaddr *src, struct sockaddr *dst,
         int protocol, struct sockaddr *local, struct sockaddr *remote)
 {
@@ -223,7 +225,7 @@ static void spdadd(struct sockaddr *src, struct sockaddr *dst,
     int length = 0;
     int key;
 
-    /* Fill default values. */
+    /* Fill values for outbound policy. */
     memset(&policy, 0, sizeof(policy));
     policy.p.sadb_x_policy_exttype = SADB_X_EXT_POLICY;
     policy.p.sadb_x_policy_type = IPSEC_POLICY_IPSEC;
@@ -237,14 +239,14 @@ static void spdadd(struct sockaddr *src, struct sockaddr *dst,
 
     /* Deal with tunnel mode. */
     if (!dst) {
+        int size = sysdep_sa_len(local);
+        memcpy(policy.addresses, local, size);
+        memcpy(&policy.addresses[size], remote, size);
+        length += size + size;
+
         policy.q.sadb_x_ipsecrequest_mode = IPSEC_MODE_TUNNEL;
         dst = (struct sockaddr *)&any;
         dst_prefix = 0;
-
-        length = sysdep_sa_len(local);
-        memcpy(policy.addresses, local, length);
-        memcpy(&policy.addresses[length], remote, length);
-        length += length;
 
         /* Also use the source address to filter policies. */
         targets[1] = dupsaddr(src);
@@ -256,14 +258,32 @@ static void spdadd(struct sockaddr *src, struct sockaddr *dst,
     length += sizeof(policy.p);
     policy.p.sadb_x_policy_len = PFKEY_UNIT64(length);
 
-    /* Always do a flush before adding the new policy. */
+    /* Always do a flush before adding new policies. */
     flush();
+
+    /* Set outbound policy. */
     key = pfkey_open();
     if (pfkey_send_spdadd(key, src, src_prefix, dst, dst_prefix, protocol,
             (caddr_t)&policy, length, 0) <= 0) {
-        do_plog(LLV_ERROR, "Cannot initialize SAD and SPD\n");
+        do_plog(LLV_ERROR, "Cannot set outbound policy\n");
         exit(1);
     }
+
+    /* Flip values for inbound policy. */
+    policy.p.sadb_x_policy_dir = IPSEC_DIR_INBOUND;
+    if (!dst_prefix) {
+        int size = sysdep_sa_len(local);
+        memcpy(policy.addresses, remote, size);
+        memcpy(&policy.addresses[size], local, size);
+    }
+
+    /* Set inbound policy. */
+    if (pfkey_send_spdadd(key, dst, dst_prefix, src, src_prefix, protocol,
+            (caddr_t)&policy, length, 0) <= 0) {
+        do_plog(LLV_ERROR, "Cannot set inbound policy\n");
+        exit(1);
+    }
+
     pfkey_close(key);
     atexit(flush);
 }
