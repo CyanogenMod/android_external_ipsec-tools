@@ -57,21 +57,22 @@ static int android_get_control_and_arguments(int *argc, char ***argv)
         exit(1);
     }
     close(i);
+    fcntl(control, F_SETFD, FD_CLOEXEC);
 
     args[0] = (*argv)[0];
     for (i = 1; i < 32; ++i) {
         unsigned char bytes[2];
-        int length = recv(control, &bytes[0], 1, 0);
-
-        if (!length) {
-            break;
-        } else if (length != 1 || recv(control, &bytes[1], 1, 0) != 1) {
+        if (recv(control, &bytes[0], 1, 0) != 1 ||
+                recv(control, &bytes[1], 1, 0) != 1) {
             do_plog(LLV_ERROR, "Cannot get argument length");
             exit(1);
         } else {
+            int length = bytes[0] << 8 | bytes[1];
             int offset = 0;
-            length = bytes[0] << 8 | bytes[1];
 
+            if (length == 0xFFFF) {
+                break;
+            }
             args[i] = malloc(length + 1);
             while (offset < length) {
                 int n = recv(control, &args[i][offset], length - offset, 0);
@@ -142,6 +143,7 @@ int main(int argc, char **argv)
     int control = android_get_control_and_arguments(&argc, &argv);
     if (control != -1) {
         pname = "%p";
+        monitor_fd(control, NULL, NULL, 0);
     }
 #endif
 
@@ -156,7 +158,7 @@ int main(int argc, char **argv)
     setup(argc, argv);
 
 #ifdef ANDROID_CHANGES
-    close(control);
+    shutdown(control, SHUT_WR);
     setuid(AID_VPN);
 #endif
 
@@ -168,7 +170,7 @@ int main(int argc, char **argv)
             int i;
             for (i = 0; i < monitor_count; ++i) {
                 if (pollfds[i].revents & POLLHUP) {
-                    do_plog(LLV_ERROR, "fd %d is closed\n", pollfds[i].fd);
+                    do_plog(LLV_ERROR, "Connection is closed\n", pollfds[i].fd);
                     exit(1);
                 }
                 if (pollfds[i].revents & POLLIN) {
@@ -191,7 +193,7 @@ void monitor_fd(int fd, int (*callback)(void *, int), void *ctx, int priority)
     monitors[monitor_count].callback = callback;
     monitors[monitor_count].ctx = ctx;
     pollfds[monitor_count].fd = fd;
-    pollfds[monitor_count].events = POLLIN;
+    pollfds[monitor_count].events = callback ? POLLIN : 0;
     ++monitor_count;
 }
 
