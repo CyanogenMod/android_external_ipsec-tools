@@ -359,7 +359,8 @@ static vchar_t *get_certificate(char *type, char *file)
 }
 
 static void set_certificates(struct remoteconf *remoteconf,
-        char *user_private_key, char *user_certificate, char *ca_certificate)
+        char *user_private_key, char *user_certificate,
+        char *ca_certificate, char *server_certificate)
 {
     remoteconf->myprivfile = user_private_key;
     remoteconf->mycertfile = user_certificate;
@@ -372,6 +373,9 @@ static void set_certificates(struct remoteconf *remoteconf,
     } else {
         remoteconf->cacertfile = ca_certificate;
         remoteconf->cacert = get_certificate("CA", ca_certificate);
+    }
+    if (server_certificate[0]) {
+        remoteconf->peerscert = get_certificate("server", server_certificate);
     }
 }
 
@@ -434,37 +438,39 @@ void setup(int argc, char **argv)
 
         set_port(targets[0], atoi(argv[6]));
         spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
-    } else if (argc == 8 && !strcmp(argv[3], "udprsa")) {
-        set_certificates(remoteconf, argv[4], argv[5], argv[6]);
+    } else if (argc == 9 && !strcmp(argv[3], "udprsa")) {
+        set_certificates(remoteconf, argv[4], argv[5], argv[6], argv[7]);
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
 
-        set_port(targets[0], atoi(argv[7]));
+        set_port(targets[0], atoi(argv[8]));
         spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
 #ifdef ENABLE_HYBRID
     } else if (argc == 10 && !strcmp(argv[3], "xauthpsk")) {
         set_pre_shared_key(remoteconf, argv[4], argv[5]);
         set_xauth_and_more(remoteconf, argv[6], argv[7], argv[8], argv[9]);
         auth = OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I;
-    } else if (argc == 11 && !strcmp(argv[3], "xauthrsa")) {
-        set_certificates(remoteconf, argv[4], argv[5], argv[6]);
-        set_xauth_and_more(remoteconf, argv[7], argv[8], argv[9], argv[10]);
+    } else if (argc == 12 && !strcmp(argv[3], "xauthrsa")) {
+        set_certificates(remoteconf, argv[4], argv[5], argv[6], argv[7]);
+        set_xauth_and_more(remoteconf, argv[8], argv[9], argv[10], argv[11]);
         auth = OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_I;
-    } else if (argc == 9 && !strcmp(argv[3], "hybridrsa")) {
-        set_certificates(remoteconf, NULL, NULL, argv[4]);
-        set_xauth_and_more(remoteconf, argv[5], argv[6], argv[7], argv[8]);
+    } else if (argc == 10 && !strcmp(argv[3], "hybridrsa")) {
+        set_certificates(remoteconf, NULL, NULL, argv[4], argv[5]);
+        set_xauth_and_more(remoteconf, argv[6], argv[7], argv[8], argv[9]);
         auth = OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I;
 #endif
     } else {
         printf("Usage: %s <interface> <server> [...], where [...] can be:\n"
-                " udppsk    <identifier> <pre-shared-key> <port>\n"
-                " udprsa    <user-private-key> <user-cert> <ca-cert> <port>\n"
+                " udppsk    <identifier> <pre-shared-key> <port>; \n"
+                " udprsa    <user-private-key> <user-certificate> \\\n"
+                "           <ca-certificate> <server-certificate> <port>;\n"
 #ifdef ENABLE_HYBRID
-                " xauthpsk  <identifier> <pre-shared-key>"
-                        " <username> <password> <phase1-up> <script-arg>\n"
-                " xauthrsa  <user-private-key> <user-cert> <ca-cert>"
-                        " <username> <password> <phase1-up> <script-arg>\n"
-                " hybridrsa <ca-cert>"
-                        " <username> <password> <phase1-up> <script-arg>\n"
+                " xauthpsk  <identifier> <pre-shared-key> \\\n"
+                "           <username> <password> <phase1-up> <script-arg>;\n"
+                " xauthrsa  <user-private-key> <user-certificate> \\\n"
+                "           <ca-certificate> <server-certificate> \\\n"
+                "           <username> <password> <phase1-up> <script-arg>;\n"
+                " hybridrsa <ca-certificate> <server-certificate> \\\n"
+                "           <username> <password> <phase1-up> <script-arg>;\n"
 #endif
                 "", argv[0]);
         exit(0);
