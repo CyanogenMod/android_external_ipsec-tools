@@ -42,11 +42,18 @@
 #include <cutils/sockets.h>
 #include <private/android_filesystem_config.h>
 
+static void notify_death()
+{
+    creat("/data/misc/vpn/abort", 0);
+}
+
 static int android_get_control_and_arguments(int *argc, char ***argv)
 {
     static char *args[32];
     int control;
     int i;
+
+    atexit(notify_death);
 
     if ((i = android_get_control_socket("racoon")) == -1) {
         return -1;
