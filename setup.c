@@ -66,7 +66,6 @@ static struct {
 } sources[2];
 
 struct localconf *lcconf = &localconf;
-char *script_names[SCRIPT_MAX + 1];
 int f_local = 0;
 
 /*****************************************************************************/
@@ -147,6 +146,8 @@ static void set_globals(char *interfaze, char *server)
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_AES, 128);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_3DES, 0);
     add_sainfo_algorithm(algclass_ipsec_enc, IPSECDOI_ESP_DES, 0);
+
+    memset(script_names, 0, sizeof(script_names));
 }
 
 /*****************************************************************************/
@@ -426,6 +427,8 @@ void setup(int argc, char **argv)
         remoteconf->gen_policy = TRUE;
         remoteconf->nat_traversal = TRUE;
         remoteconf->dh_group = OAKLEY_ATTR_GRP_DESC_MODP1024;
+        remoteconf->script[SCRIPT_PHASE1_UP] = strtovchar("");
+        remoteconf->script[SCRIPT_PHASE1_DOWN] = strtovchar("");
         oakley_setdhgroup(remoteconf->dh_group, &remoteconf->dhgrp);
         remoteconf->remote = dupsaddr(targets[0]);
         set_port(remoteconf->remote, localconf.port_isakmp);
@@ -600,9 +603,14 @@ extern const char *android_hook(char **envp);
 int privsep_script_exec(char *script, int name, char * const *envp)
 {
     if (skip_script) {
-        do_plog(LLV_WARNING,
-                "Phase 1 is up again. This time skip executing the script.\n");
-    } else {
+        return 0;
+    }
+    skip_script = 1;
+
+    if (name == SCRIPT_PHASE1_DOWN) {
+        exit(1);
+    }
+    if (script_names[SCRIPT_PHASE1_UP]) {
         /* Racoon ignores INTERNAL_IP6_ADDRESS, so we only do IPv4. */
         struct sockaddr *addr4 = str2saddr(get_env(envp, "INTERNAL_ADDR4"),
                 NULL);
@@ -623,7 +631,6 @@ int privsep_script_exec(char *script, int name, char * const *envp)
             exit(1);
         }
 
-        skip_script = 1;
         racoon_free(addr4);
         racoon_free(local);
         racoon_free(remote);
