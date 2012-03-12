@@ -232,16 +232,29 @@ static void spdadd(struct sockaddr *local, struct sockaddr *remote)
 void setup(int argc, char **argv)
 {
     int auth;
-    if (argc != 4 && argc != 6) {
-        printf("Usage: %s server port pre-shared-key\n"
-               "       %s server port my-private-key my-cert ca-cert\n",
+    char **method_argv;
+    if (argc == 5 && !strcmp(argv[1], "psk")) {
+       auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
+       method_argv = argv+2;
+    } else if (argc == 7 && !strcmp(argv[1], "rsa")) {
+       auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
+       method_argv = argv+2;
+    } else if (argc == 4) {
+       auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
+       method_argv = argv+1;
+    } else if (argc == 6) {
+       auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
+       method_argv = argv+1;
+    } else {
+        printf("Usage: %s psk <server> <port> <pre-shared-key>\n"
+               "       %s rsa <server> <port> <my-private-key> <my-cert> <ca-cert>\n",
                argv[0], argv[0]);
         exit(0);
     }
     set_default();
 
     /* Set local address and remote address. */
-    set_address(argv[1], argv[2]);
+    set_address(method_argv[0], method_argv[1]);
 
     /* Initialize SA and SPD. */
     spdadd(myaddrs[0].addr, remoteconf.remote);
@@ -257,15 +270,20 @@ void setup(int argc, char **argv)
 #endif
 
     /* Set authentication method. */
-    if (argc == 4) {
-        pre_shared_key = argv[3];
-        auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
-    } else {
-        remoteconf.idvtype = IDTYPE_ASN1DN;
-        remoteconf.myprivfile = argv[3];
-        remoteconf.mycertfile = argv[4];
-        remoteconf.cacertfile = argv[5];
-        auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
+    switch (auth) {
+        case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
+            pre_shared_key = method_argv[2];
+            break;
+
+        case OAKLEY_ATTR_AUTH_METHOD_RSASIG:
+            remoteconf.myprivfile = method_argv[2];
+            remoteconf.mycertfile = method_argv[3];
+            remoteconf.cacertfile = method_argv[4];
+            break;
+
+	        default:
+            do_plog(LLV_ERROR, "Unsupported authentication method\n");
+	            exit(1);
     }
 
     /* Create proposals. */
