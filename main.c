@@ -27,6 +27,8 @@
 
 #ifdef ANDROID_CHANGES
 
+#include <openssl/engine.h>
+
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -156,9 +158,17 @@ int main(int argc, char **argv)
 {
 #ifdef ANDROID_CHANGES
     int control = android_get_control_and_arguments(&argc, &argv);
+    ENGINE *e;
     if (control != -1) {
         pname = "%p";
         monitor_fd(control, NULL);
+
+        ENGINE_load_dynamic();
+        e = ENGINE_by_id("keystore");
+        if (!e || !ENGINE_init(e)) {
+            do_plog(LLV_ERROR, "ipsec-tools: cannot load keystore engine");
+            exit(1);
+        }
     }
 #endif
 
@@ -194,6 +204,12 @@ int main(int argc, char **argv)
             }
         }
     }
+#ifdef ANDROID_CHANGES
+    if (e) {
+        ENGINE_finish(e);
+        ENGINE_free(e);
+    }
+#endif
     return 0;
 }
 

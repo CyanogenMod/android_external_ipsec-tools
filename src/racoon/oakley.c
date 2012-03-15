@@ -40,6 +40,9 @@
 
 #include <openssl/pkcs7.h>
 #include <openssl/x509.h>
+#ifdef ANDROID_CHANGES
+#include <openssl/engine.h>
+#endif
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -1799,6 +1802,44 @@ end:
 }
 #endif
 
+#ifdef ANDROID_CHANGES
+static vchar_t* keystore_sign(vchar_t* src, const char* path) {
+	vchar_t* sig = NULL;
+
+	ENGINE* e = ENGINE_by_id("keystore");
+	if (!e) {
+		return NULL;
+	}
+
+	if (!ENGINE_init(e)) {
+		ENGINE_free(e);
+		return NULL;
+	}
+
+	const char *key_id;
+	if (sscanf(path, pname, &key_id) != 1) {
+		do_plog(LLV_ERROR, "couldn't read private key info\n");
+		return NULL;
+	}
+
+	EVP_PKEY* evp = ENGINE_load_private_key(e, key_id, NULL, NULL);
+	if (!evp) {
+		do_plog(LLV_ERROR, "couldn't retrieve private key");
+		ERR_clear_error();
+		return NULL;
+	}
+
+	sig = eay_rsa_sign(src, evp->pkey.rsa);
+
+	EVP_PKEY_free(evp);
+
+	ENGINE_finish(e);
+	ENGINE_free(e);
+
+	return sig;
+}
+#endif
+
 /* get signature */
 int
 oakley_getsign(iph1)
@@ -1820,6 +1861,9 @@ oakley_getsign(iph1)
 		getpathname(path, sizeof(path),
 			LC_PATHTYPE_CERT,
 			iph1->rmconf->myprivfile);
+#ifdef ANDROID_CHANGES
+		iph1->sig = keystore_sign(iph1->hash, path);
+#else
 		privkey = privsep_eay_get_pkcs1privkey(path);
 		if (privkey == NULL) {
 			plog(LLV_ERROR, LOCATION, NULL,
@@ -1830,6 +1874,7 @@ oakley_getsign(iph1)
 		plogdump(LLV_DEBUG2, privkey->v, privkey->l);
 
 		iph1->sig = eay_get_x509sign(iph1->hash, privkey);
+#endif
 		break;
 #ifndef ANDROID_PATCHED
 	case ISAKMP_CERT_PLAINRSA:

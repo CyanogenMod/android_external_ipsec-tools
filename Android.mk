@@ -62,7 +62,7 @@ LOCAL_STATIC_LIBRARIES := libipsec
 
 LOCAL_SHARED_LIBRARIES := libcutils libcrypto
 
-LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
+LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
 
 LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
 
@@ -78,7 +78,7 @@ LOCAL_SRC_FILES := \
 	src/libipsec/pfkey.c \
 	src/libipsec/ipsec_strerror.c
 
-LOCAL_CFLAGS := -DHAVE_CONFIG_H
+LOCAL_CFLAGS := -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
 
 LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
 
