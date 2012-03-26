@@ -1,7 +1,7 @@
-# Copyright 2011 Google Inc. All Rights Reserved.
-#Tue Jul  5 19:05:36 PDT 2011
-currentVersion=0.8.0
-version=0.8.0
+# Copyright 2010 Google Inc. All Rights Reserved.
+#Fri Jul 16 10:03:09 PDT 2010
+currentVersion=0.7.3
+version=0.7.3 (unreleased)
 isNative=true
 name=ipsec-tools
 keywords=ipsec-tools

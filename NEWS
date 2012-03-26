@@ -1,38 +1,36 @@
 Version history:
 ----------------
-0.8	- 18 March 2011
-	o Fix authentication method ambiguity with kerberos and xauth
-	o RFC2253 compliant escaping of asn1dn identifiers (Cyrus Rahman)
-	o Local address code rewrite to speed things up
-	o Improved MIPv6 support (Arnaud Ebalard)
-	o ISAKMP SA (phase1) rekeying
-	o Improved scheduler (faster algorithm, support monotonic clock)
-	o Handle RESPONDER-LIFETIME in quick mode
-	o Handle INITIAL-CONTACT in from main mode too
-	o Rewritten event handling framework for admin port
-	o Ability to initiate IPsec SA through admin port
-	o NAT-T Original Address handling (transport mode NAT-T support)
-	o clean NAT-T - PFkey support
-	o support for multiple anonymous remoteconfs
-	o Remove various obsolete configuration options
-	o A lot of other bug fixes, performance improvements and clean ups
 
-0.7.1	- 23 July 2008
+0.7.3 - 23 August 2009
+	o Fix a remote crash and a memory leak
+	o Fixed a NAT-T flag check
+	o Some code cleanups/compilation fixes with recent gcc
+
+0.7.2 - 22 April 2009
+	o Fix a remote crash in fragmentation code
+	o Phase2 message identities are phase1 specific (Vista compatibility=
+	o Autogenerate ChangeLog from cvs metadata
+	o Fix mode config pool resizing
+	o NAT-T fixes related to purging of IPsec SA:s and retransmission
+	o Remove phase1 handler immediately if first exchange is bad
+	o A bunch of memory leak and possible memory corruptions (triggerable
+	  by bad configuration or startup parameters)
+
+0.7.1 - 23 July 2008
 	o Fixes a memory leak when invalid proposal received
 	o Some fixes in DPD
 	o do not set default gss id if xauth is used
 	o fixed hybrid enabled builds
 	o fixed compilation on FreeBSD8
 	o cleanup in network port value manipulation
-	o Gets ports from SADB_X_EXT_NAT_T_[SD]PORT if present in
-	  purge_ipsec_spi()
-	o Generates a log if cert validation has been disabled by
-	  configuration
+	o gets ports from SADB_X_EXT_NAT_T_[SD]PORT if present in purge_ipsec_spi()
+	o Generates a log if cert validation has been disabled by configuration
 	o better handling for pfkey socket read errors
 	o Fixes in yacc / bison stuff
 	o new plog() macro (reduced CPU usage when logging is disabled)
-	o Try to work better with huge SPD/SAD
+	o Try to works better with huge SPD/SAD
 	o Corrected modecfg option syntax
+	o Many other various fixes...
 
 0.7	- 09 August 2007
 	o Xauth with pre-shared key PSK
@@ -65,7 +63,7 @@ Version history:
 	o ESP fragmentation in tunnel mode can be tunned (NetBSD only)
 	o racoon admin interface is exported (header and library) to 
 	  help building control programs for racoon (think GUI)
-	o Fixed single DES support; single DES users MUST UPGRADE.
+ 	o Fixed single DES support; single DES users MUST UPGRADE.
 
 0.5	- 10 April 2005
 	o Rewritten buildsystem. Now completely autoconfed, automaked,
@@ -93,7 +91,7 @@ Version history:
 	o All source files now have 3-clause BSD license.
 
 0.3	- 14 April 2004
-	o Fixed setkey to handle multiline commands again.
+        o Fixed setkey to handle multiline commands again.
 	o Added command 'exit' to setkey.
 	o Fixed racoon to only Warn if no CRL was found.
 	o Improved testsuite.

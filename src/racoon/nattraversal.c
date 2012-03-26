@@ -1,4 +1,4 @@
-/*	$NetBSD: nattraversal.c,v 1.14 2011/03/14 17:18:13 tteras Exp $	*/
+/*	$NetBSD: nattraversal.c,v 1.6.6.2 2009/05/18 17:01:07 tteras Exp $	*/
 
 /*
  * Copyright (C) 2004 SuSE Linux AG, Nuernberg, Germany.
@@ -77,7 +77,6 @@ struct natt_ka_addrs {
 };
 
 static TAILQ_HEAD(_natt_ka_addrs, natt_ka_addrs) ka_tree;
-static struct sched sc_natt = SCHED_INITIALIZER();
 
 /*
  * check if the given vid is NAT-T.
@@ -127,14 +126,10 @@ natt_hash_addr (struct ph1handle *iph1, struct sockaddr *addr)
   char *ptr;
   void *addr_ptr, *addr_port;
   size_t buf_size, addr_size;
-  int natt_force = 0;
-
-  if (iph1->rmconf != NULL && iph1->rmconf->nat_traversal == NATT_FORCE)
-	  natt_force = 1;
 
   plog (LLV_INFO, LOCATION, addr, "Hashing %s with algo #%d %s\n",
 	saddr2str(addr), iph1->approval->hashtype, 
-	natt_force?"(NAT-T forced)":"");
+	(iph1->rmconf->nat_traversal == NATT_FORCE)?"(NAT-T forced)":"");
   
   if (addr->sa_family == AF_INET) {
     addr_size = sizeof (struct in_addr);	/* IPv4 address */
@@ -168,7 +163,7 @@ natt_hash_addr (struct ph1handle *iph1, struct sockaddr *addr)
   ptr += sizeof (cookie_t);
   
   /* Copy-in Address (or zeroes if NATT_FORCE) */
-  if (natt_force)
+  if (iph1->rmconf->nat_traversal == NATT_FORCE)
     memset (ptr, 0, addr_size);
   else
     memcpy (ptr, addr_ptr, addr_size);
@@ -191,8 +186,7 @@ natt_compare_addr_hash (struct ph1handle *iph1, vchar_t *natd_received,
   u_int32_t flag;
   int verified = 0;
 
-  if (iph1->rmconf != NULL &&
-      iph1->rmconf->nat_traversal == NATT_FORCE)
+  if (iph1->rmconf->nat_traversal == NATT_FORCE)
     return verified;
 
   if (natd_seq == 0) {
@@ -308,28 +302,9 @@ natt_float_ports (struct ph1handle *iph1)
 	natt_keepalive_add_ph1 (iph1);
 }
 
-static int
-natt_is_enabled (struct remoteconf *rmconf, void *args)
-{
-  if (rmconf->nat_traversal)
-    return 1;
-  return 0;
-}
-
 void
 natt_handle_vendorid (struct ph1handle *iph1, int vid_numeric)
 {
-  if (iph1->rmconf == NULL) {
-    /* Check if any candidate remote conf allows nat-t */
-    struct rmconfselector rmconf;
-    rmconf_selector_from_ph1(&rmconf, iph1);
-    if (enumrmconf(&rmconf, natt_is_enabled, NULL) == 0)
-      return;
-  } else {
-    if (!iph1->rmconf->nat_traversal)
-      return;
-  }
-
   if (! iph1->natt_options)
     iph1->natt_options = racoon_calloc (1, sizeof (*iph1->natt_options));
 
@@ -355,7 +330,7 @@ natt_keepalive_delete (struct natt_ka_addrs *ka)
 
 /* NAT keepalive functions */
 static void
-natt_keepalive_send (struct sched *param)
+natt_keepalive_send (void *param)
 {
   struct natt_ka_addrs	*ka, *next = NULL;
   char keepalive_packet[] = { 0xff };
@@ -365,7 +340,7 @@ natt_keepalive_send (struct sched *param)
   for (ka = TAILQ_FIRST(&ka_tree); ka; ka = next) {
     next = TAILQ_NEXT(ka, chain);
     
-    s = myaddr_getfd(ka->src);
+    s = getsockmyaddr(ka->src);
     if (s == -1) {
       natt_keepalive_delete(ka);
       continue;
@@ -379,7 +354,7 @@ natt_keepalive_send (struct sched *param)
 	   strerror (errno));
   }
   
-  sched_schedule (&sc_natt, lcconf->natt_ka_interval, natt_keepalive_send);
+  sched_new (lcconf->natt_ka_interval, natt_keepalive_send, NULL);
 }
 
 void
@@ -389,7 +364,7 @@ natt_keepalive_init (void)
 
   /* To disable sending KAs set natt_ka_interval=0 */
   if (lcconf->natt_ka_interval > 0)
-    sched_schedule (&sc_natt, lcconf->natt_ka_interval, natt_keepalive_send);
+    sched_new (lcconf->natt_ka_interval, natt_keepalive_send, NULL);
 }
 
 int
@@ -398,8 +373,8 @@ natt_keepalive_add (struct sockaddr *src, struct sockaddr *dst)
   struct natt_ka_addrs *ka = NULL, *new_addr;
   
   TAILQ_FOREACH (ka, &ka_tree, chain) {
-    if (cmpsaddr(ka->src, src) == CMPSADDR_MATCH &&
-	cmpsaddr(ka->dst, dst) == CMPSADDR_MATCH) {
+    if (cmpsaddrstrict(ka->src, src) == 0 && 
+	cmpsaddrstrict(ka->dst, dst) == 0) {
       ka->in_use++;
       plog (LLV_INFO, LOCATION, NULL, "KA found: %s (in_use=%u)\n",
 	    saddr2str_fromto("%s->%s", src, dst), ka->in_use);
@@ -462,8 +437,8 @@ natt_keepalive_remove (struct sockaddr *src, struct sockaddr *dst)
     plog (LLV_DEBUG, LOCATION, NULL, "KA tree dump: %s (in_use=%u)\n",
 	  saddr2str_fromto("%s->%s", src, dst), ka->in_use);
 
-    if (cmpsaddr(ka->src, src) == CMPSADDR_MATCH &&
-	cmpsaddr(ka->dst, dst) == CMPSADDR_MATCH &&
+    if (cmpsaddrstrict(ka->src, src) == 0 && 
+	cmpsaddrstrict(ka->dst, dst) == 0 &&
 	-- ka->in_use <= 0) {
 
       plog (LLV_DEBUG, LOCATION, NULL, "KA removing this one...\n");
@@ -476,16 +451,16 @@ natt_keepalive_remove (struct sockaddr *src, struct sockaddr *dst)
   }
 }
 
-static int
+static struct remoteconf *
 natt_enabled_in_rmconf_stub (struct remoteconf *rmconf, void *data)
 {
-  return rmconf->nat_traversal ? 1 : 0;
+  return (rmconf->nat_traversal ? rmconf : NULL);
 }
 
 int
 natt_enabled_in_rmconf ()
 {
-  return enumrmconf(NULL, natt_enabled_in_rmconf_stub, NULL) != 0;
+  return foreachrmconf (natt_enabled_in_rmconf_stub, NULL) != NULL;
 }
 
 

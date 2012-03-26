@@ -1,4 +1,4 @@
-/*	$NetBSD: cfparse.y,v 1.42 2011/03/14 15:50:36 vanhu Exp $	*/
+/*	$NetBSD: cfparse.y,v 1.18.4.7 2008/07/21 20:45:32 tteras Exp $	*/
 
 /* Id: cfparse.y,v 1.66 2006/08/22 18:17:17 manubsd Exp */
 
@@ -94,7 +94,14 @@
 #endif
 #include "vendorid.h"
 #include "rsalist.h"
-#include "crypto_openssl.h"
+
+struct proposalspec {
+	time_t lifetime;		/* for isakmp/ipsec */
+	int lifebyte;			/* for isakmp/ipsec */
+	struct secprotospec *spspec;	/* the head is always current spec. */
+	struct proposalspec *next;	/* the tail is the most prefered. */
+	struct proposalspec *prev;
+};
 
 struct secprotospec {
 	int prop_no;
@@ -113,6 +120,7 @@ struct secprotospec {
 
 	struct secprotospec *next;	/* the tail is the most prefiered. */
 	struct secprotospec *prev;
+	struct proposalspec *back;
 };
 
 static int num2dhgroup[] = {
@@ -143,35 +151,24 @@ static struct sainfo *cur_sainfo;
 static int cur_algclass;
 static int oldloglevel = LLV_BASE;
 
+static struct proposalspec *newprspec __P((void));
+static void insprspec __P((struct proposalspec *, struct proposalspec **));
 static struct secprotospec *newspspec __P((void));
-static void insspspec __P((struct remoteconf *, struct secprotospec *));
-void dupspspec_list __P((struct remoteconf *dst, struct remoteconf *src));
-void flushspspec __P((struct remoteconf *));
+static void insspspec __P((struct secprotospec *, struct proposalspec **));
 static void adminsock_conf __P((vchar_t *, vchar_t *, vchar_t *, int));
 
-static int set_isakmp_proposal __P((struct remoteconf *));
+static int set_isakmp_proposal
+	__P((struct remoteconf *, struct proposalspec *));
 static void clean_tmpalgtype __P((void));
 static int expand_isakmpspec __P((int, int, int *,
 	int, int, time_t, int, int, int, char *, struct remoteconf *));
+static int listen_addr __P((struct sockaddr *addr, int udp_encap));
 
 void freeetypes (struct etypes **etypes);
 
-static int load_x509(const char *file, char **filenameptr,
-		     vchar_t **certptr)
-{
-	char path[PATH_MAX];
-
-	getpathname(path, sizeof(path), LC_PATHTYPE_CERT, file);
-	*certptr = eay_get_x509cert(path);
-	if (*certptr == NULL)
-		return -1;
-
-	*filenameptr = racoon_strdup(file);
-	STRDUP_FATAL(*filenameptr);
-
-	return 0;
-}
-
+#if 0
+static int fix_lifebyte __P((u_long));
+#endif
 %}
 
 %union {
@@ -188,8 +185,8 @@ static int load_x509(const char *file, char **filenameptr,
 %token PATH PATHTYPE
 	/* include */
 %token INCLUDE
-	/* PFKEY_BUFFER */
-%token PFKEY_BUFFER
+	/* self information */
+%token IDENTIFIER VENDORID
 	/* logging */
 %token LOGGING LOGLEV
 	/* padding */
@@ -199,8 +196,6 @@ static int load_x509(const char *file, char **filenameptr,
 	/* ldap config */
 %token LDAPCFG LDAP_HOST LDAP_PORT LDAP_PVER LDAP_BASE LDAP_BIND_DN LDAP_BIND_PW LDAP_SUBTREE
 %token LDAP_ATTR_USER LDAP_ATTR_ADDR LDAP_ATTR_MASK LDAP_ATTR_GROUP LDAP_ATTR_MEMBER
-	/* radius config */
-%token RADCFG RAD_AUTH RAD_ACCT RAD_TIMEOUT RAD_RETRIES
 	/* modecfg */
 %token MODECFG CFG_NET4 CFG_MASK4 CFG_DNS4 CFG_NBNS4 CFG_DEFAULT_DOMAIN
 %token CFG_AUTH_SOURCE CFG_AUTH_GROUPS CFG_SYSTEM CFG_RADIUS CFG_PAM CFG_LDAP CFG_LOCAL CFG_NONE
@@ -216,10 +211,10 @@ static int load_x509(const char *file, char **filenameptr,
 	/* sainfo */
 %token SAINFO FROM
 	/* remote */
-%token REMOTE ANONYMOUS CLIENTADDR INHERIT REMOTE_ADDRESS
+%token REMOTE ANONYMOUS INHERIT
 %token EXCHANGE_MODE EXCHANGETYPE DOI DOITYPE SITUATION SITUATIONTYPE
 %token CERTIFICATE_TYPE CERTTYPE PEERS_CERTFILE CA_TYPE
-%token VERIFY_CERT SEND_CERT SEND_CR MATCH_EMPTY_CR
+%token VERIFY_CERT SEND_CERT SEND_CR
 %token IDENTIFIERTYPE IDENTIFIERQUAL MY_IDENTIFIER 
 %token PEERS_IDENTIFIER VERIFY_IDENTIFIER
 %token DNSSEC CERT_X509 CERT_PLAINRSA
@@ -234,12 +229,11 @@ static int load_x509(const char *file, char **filenameptr,
 %token DPD DPD_DELAY DPD_RETRY DPD_MAXFAIL
 %token PH1ID
 %token XAUTH_LOGIN WEAK_PHASE1_CHECK
-%token REKEY
 
 %token PREFIX PORT PORTANY UL_PROTO ANY IKE_FRAG ESP_FRAG MODE_CFG
 %token PFS_GROUP LIFETIME LIFETYPE_TIME LIFETYPE_BYTE STRENGTH REMOTEID
 
-%token SCRIPT PHASE1_UP PHASE1_DOWN PHASE1_DEAD
+%token SCRIPT PHASE1_UP PHASE1_DOWN
 
 %token NUMBER SWITCH BOOLEAN
 %token HEXSTRING QUOTEDSTRING ADDRSTRING ADDRRANGE
@@ -271,13 +265,12 @@ statement
 	:	privsep_statement
 	|	path_statement
 	|	include_statement
-	|	pfkey_statement
 	|	gssenc_statement
+	|	identifier_statement
 	|	logging_statement
 	|	padding_statement
 	|	listen_statement
 	|	ldapcfg_statement
-	|	radcfg_statement
 	|	modecfg_statement
 	|	timer_statement
 	|	sainfo_statement
@@ -361,13 +354,6 @@ include_statement
 		}
 	;
 
-    /* pfkey_buffer */
-pfkey_statement
-    :   PFKEY_BUFFER NUMBER EOS
-        {
-			lcconf->pfkey_buffer_size = $2;
-        }
-    ;
 	/* gss_id_enc */
 gssenc_statement
 	:	GSS_ID_ENC GSS_ID_ENCTYPE EOS
@@ -380,12 +366,45 @@ gssenc_statement
 		}
 	;
 
+	/* self information */
+identifier_statement
+	:	IDENTIFIER identifier_stmt
+	;
+identifier_stmt
+	:	VENDORID
+		{
+			/*XXX to be deleted */
+		}
+		QUOTEDSTRING EOS
+	|	IDENTIFIERTYPE QUOTEDSTRING
+		{
+			/*XXX to be deleted */
+			$2->l--;	/* nuke '\0' */
+			lcconf->ident[$1] = $2;
+			if (lcconf->ident[$1] == NULL) {
+				yyerror("failed to set my ident: %s",
+					strerror(errno));
+				return -1;
+			}
+		}
+		EOS
+	;
+
 	/* logging */
 logging_statement
 	:	LOGGING log_level EOS
 	;
 log_level
-	:	LOGLEV
+	:	HEXSTRING
+		{
+			/*
+			 * XXX ignore it because this specification
+			 * will be obsoleted.
+			 */
+			yywarn("see racoon.conf(5), such a log specification will be obsoleted.");
+			vfree($1);
+		}
+	|	LOGLEV
 		{
 			/*
 			 * set the loglevel to the value specified
@@ -424,21 +443,23 @@ listen_stmts
 listen_stmt
 	:	X_ISAKMP ike_addrinfo_port
 		{
-			myaddr_listen($2, FALSE);
-			racoon_free($2);
+			listen_addr ($2, 0);
 		}
 		EOS
 	|	X_ISAKMP_NATT ike_addrinfo_port
 		{
 #ifdef ENABLE_NATT
-			myaddr_listen($2, TRUE);
-			racoon_free($2);
+			listen_addr ($2, 1);
 #else
-			racoon_free($2);
 			yyerror("NAT-T support not compiled in.");
 #endif
 		}
 		EOS
+	|	X_ADMIN
+		{
+			yyerror("admin directive is obsoleted.");
+		}
+		PORT EOS
 	|	ADMINSOCK QUOTEDSTRING QUOTEDSTRING QUOTEDSTRING NUMBER 
 		{
 #ifdef ENABLE_ADMINPORT
@@ -483,122 +504,6 @@ ike_addrinfo_port
 ike_port
 	:	/* nothing */	{ $$ = PORT_ISAKMP; }
 	|	PORT		{ $$ = $1; }
-	;
-
-	/* radius configuration */
-radcfg_statement
-	:	RADCFG {
-#ifndef ENABLE_HYBRID
-			yyerror("racoon not configured with --enable-hybrid");
-			return -1;
-#endif
-#ifndef HAVE_LIBRADIUS
-			yyerror("racoon not configured with --with-libradius");
-			return -1;
-#endif
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			xauth_rad_config.timeout = 3;
-			xauth_rad_config.retries = 3;
-#endif
-#endif
-		} BOC radcfg_stmts EOC
-	;
-radcfg_stmts
-	:	/* nothing */
-	|	radcfg_stmts radcfg_stmt
-	;
-radcfg_stmt
-	:	RAD_AUTH QUOTEDSTRING QUOTEDSTRING
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			int i = xauth_rad_config.auth_server_count;
-			if (i == RADIUS_MAX_SERVERS) {
-				yyerror("maximum radius auth servers exceeded");
-				return -1;
-			}
-
-			xauth_rad_config.auth_server_list[i].host = vdup($2);
-			xauth_rad_config.auth_server_list[i].secret = vdup($3);
-			xauth_rad_config.auth_server_list[i].port = 0; // default port
-			xauth_rad_config.auth_server_count++;
-#endif
-#endif
-		}
-		EOS
-	|	RAD_AUTH QUOTEDSTRING NUMBER QUOTEDSTRING
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			int i = xauth_rad_config.auth_server_count;
-			if (i == RADIUS_MAX_SERVERS) {
-				yyerror("maximum radius auth servers exceeded");
-				return -1;
-			}
-
-			xauth_rad_config.auth_server_list[i].host = vdup($2);
-			xauth_rad_config.auth_server_list[i].secret = vdup($4);
-			xauth_rad_config.auth_server_list[i].port = $3;
-			xauth_rad_config.auth_server_count++;
-#endif
-#endif
-		}
-		EOS
-	|	RAD_ACCT QUOTEDSTRING QUOTEDSTRING
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			int i = xauth_rad_config.acct_server_count;
-			if (i == RADIUS_MAX_SERVERS) {
-				yyerror("maximum radius account servers exceeded");
-				return -1;
-			}
-
-			xauth_rad_config.acct_server_list[i].host = vdup($2);
-			xauth_rad_config.acct_server_list[i].secret = vdup($3);
-			xauth_rad_config.acct_server_list[i].port = 0; // default port
-			xauth_rad_config.acct_server_count++;
-#endif
-#endif
-		}
-		EOS
-	|	RAD_ACCT QUOTEDSTRING NUMBER QUOTEDSTRING
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			int i = xauth_rad_config.acct_server_count;
-			if (i == RADIUS_MAX_SERVERS) {
-				yyerror("maximum radius account servers exceeded");
-				return -1;
-			}
-
-			xauth_rad_config.acct_server_list[i].host = vdup($2);
-			xauth_rad_config.acct_server_list[i].secret = vdup($4);
-			xauth_rad_config.acct_server_list[i].port = $3;
-			xauth_rad_config.acct_server_count++;
-#endif
-#endif
-		}
-		EOS
-	|	RAD_TIMEOUT NUMBER
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			xauth_rad_config.timeout = $2;
-#endif
-#endif
-		}
-		EOS
-	|	RAD_RETRIES NUMBER
-		{
-#ifdef ENABLE_HYBRID
-#ifdef HAVE_LIBRADIUS
-			xauth_rad_config.retries = $2;
-#endif
-#endif
-		}
-		EOS
 	;
 
 	/* ldap configuration */
@@ -1110,16 +1015,12 @@ authgroup
 
 			grouplist = racoon_realloc(icc->grouplist,
 					sizeof(char**)*(icc->groupcount+1));
-			if (grouplist == NULL) {
+			if (grouplist == NULL)
 				yyerror("unable to allocate auth group list");
-				return -1;
-			}
 
 			groupname = racoon_malloc($1->l+1);
-			if (groupname == NULL) {
+			if (groupname == NULL)
 				yyerror("unable to allocate auth group name");
-				return -1;
-			}
 
 			memcpy(groupname,$1->v,$1->l);
 			groupname[$1->l]=0;
@@ -1147,10 +1048,8 @@ splitdns
 			if (!icc->splitdns_len)
 			{
 				icc->splitdns_list = racoon_malloc($1->l);
-				if(icc->splitdns_list == NULL) {
+				if(icc->splitdns_list == NULL)
 					yyerror("error allocating splitdns list buffer");
-					return -1;
-				}
 				memcpy(icc->splitdns_list,$1->v,$1->l);
 				icc->splitdns_len = $1->l;
 			}
@@ -1158,10 +1057,8 @@ splitdns
 			{
 				int len = icc->splitdns_len + $1->l + 1;
 				icc->splitdns_list = racoon_realloc(icc->splitdns_list,len);
-				if(icc->splitdns_list == NULL) {
+				if(icc->splitdns_list == NULL)
 					yyerror("error allocating splitdns list buffer");
-					return -1;
-				}
 				icc->splitdns_list[icc->splitdns_len] = ',';
 				memcpy(icc->splitdns_list + icc->splitdns_len + 1, $1->v, $1->l);
 				icc->splitdns_len = len;
@@ -1257,16 +1154,12 @@ sainfo_statement
 			check = getsainfo(cur_sainfo->idsrc,
 					  cur_sainfo->iddst,
 					  cur_sainfo->id_i,
-					  NULL,
 					  cur_sainfo->remoteid);
-
-			if (check && ((check->idsrc != SAINFO_ANONYMOUS) &&
-				      (cur_sainfo->idsrc != SAINFO_ANONYMOUS))) {
+			if (check && (!check->idsrc && !cur_sainfo->idsrc)) {
 				yyerror("duplicated sainfo: %s",
 					sainfo2str(cur_sainfo));
 				return -1;
 			}
-
 			inssainfo(cur_sainfo);
 		}
 		EOC
@@ -1274,28 +1167,18 @@ sainfo_statement
 sainfo_name
 	:	ANONYMOUS
 		{
-			cur_sainfo->idsrc = SAINFO_ANONYMOUS;
-			cur_sainfo->iddst = SAINFO_ANONYMOUS;
-		}
-	|	ANONYMOUS CLIENTADDR
-		{
-			cur_sainfo->idsrc = SAINFO_ANONYMOUS;
-			cur_sainfo->iddst = SAINFO_CLIENTADDR;
+			cur_sainfo->idsrc = NULL;
+			cur_sainfo->iddst = NULL;
 		}
 	|	ANONYMOUS sainfo_id
 		{
-			cur_sainfo->idsrc = SAINFO_ANONYMOUS;
+			cur_sainfo->idsrc = NULL;
 			cur_sainfo->iddst = $2;
 		}
 	|	sainfo_id ANONYMOUS
 		{
 			cur_sainfo->idsrc = $1;
-			cur_sainfo->iddst = SAINFO_ANONYMOUS;
-		}
-	|	sainfo_id CLIENTADDR
-		{
-			cur_sainfo->idsrc = $1;
-			cur_sainfo->iddst = SAINFO_CLIENTADDR;
+			cur_sainfo->iddst = NULL;
 		}
 	|	sainfo_id sainfo_id
 		{
@@ -1524,6 +1407,16 @@ sainfo_spec
 			cur_algclass = $1;
 		}
 		algorithms EOS
+	|	IDENTIFIER IDENTIFIERTYPE
+		{
+			yyerror("it's deprecated to specify a identifier in phase 2");
+		}
+		EOS
+	|	MY_IDENTIFIER IDENTIFIERTYPE QUOTEDSTRING
+		{
+			yyerror("it's deprecated to specify a identifier in phase 2");
+		}
+		EOS
 	;
 
 algorithms
@@ -1614,82 +1507,36 @@ keylength
 
 	/* remote */
 remote_statement
-	: REMOTE QUOTEDSTRING INHERIT QUOTEDSTRING
-		{
-			struct remoteconf *from, *new;
-
-			if (getrmconf_by_name($2->v) != NULL) {
-				yyerror("named remoteconf \"%s\" already exists.");
-				return -1;
-			}
-
-			from = getrmconf_by_name($4->v);
-			if (from == NULL) {
-				yyerror("named parent remoteconf \"%s\" does not exist.",
-					$4->v);
-				return -1;
-			}
-
-			new = duprmconf_shallow(from);
-			if (new == NULL) {
-				yyerror("failed to duplicate remoteconf from \"%s\".",
-					$4->v);
-				return -1;
-			}
-
-			new->name = racoon_strdup($2->v);
-			cur_rmconf = new;
-
-			vfree($2);
-			vfree($4);
-		}
-		remote_specs_block
-	| REMOTE QUOTEDSTRING
+	:	REMOTE remote_index INHERIT remote_index
 		{
 			struct remoteconf *new;
+			struct proposalspec *prspec;
 
-			if (getrmconf_by_name($2->v) != NULL) {
-				yyerror("Named remoteconf \"%s\" already exists.");
-				return -1;
-			}
-
-			new = newrmconf();
+			new = copyrmconf($4);
 			if (new == NULL) {
-				yyerror("failed to get new remoteconf.");
-				return -1;
-			}
-			new->name = racoon_strdup($2->v);
-			cur_rmconf = new;
-
-			vfree($2);
-		}
-		remote_specs_block
-	| REMOTE remote_index INHERIT remote_index
-		{
-			struct remoteconf *from, *new;
-
-			from = getrmconf($4, GETRMCONF_F_NO_ANONYMOUS);
-			if (from == NULL) {
-				yyerror("failed to get remoteconf for %s.",
-					saddr2str($4));
+				yyerror("failed to get remoteconf for %s.", saddr2str ($4));
 				return -1;
 			}
 
-			new = duprmconf_shallow(from);
-			if (new == NULL) {
-				yyerror("failed to duplicate remoteconf from %s.",
-					saddr2str($4));
-				return -1;
-			}
-
-			racoon_free($4);
 			new->remote = $2;
+			new->inherited_from = getrmconf_strict($4, 1);
+			new->proposal = NULL;
+			new->prhead = NULL;
 			cur_rmconf = new;
+
+			prspec = newprspec();
+			if (prspec == NULL || !cur_rmconf->inherited_from 
+				|| !cur_rmconf->inherited_from->proposal)
+				return -1;
+			prspec->lifetime = cur_rmconf->inherited_from->proposal->lifetime;
+			prspec->lifebyte = cur_rmconf->inherited_from->proposal->lifebyte;
+			insprspec(prspec, &cur_rmconf->prhead);
 		}
 		remote_specs_block
 	|	REMOTE remote_index
 		{
 			struct remoteconf *new;
+			struct proposalspec *prspec;
 
 			new = newrmconf();
 			if (new == NULL) {
@@ -1699,6 +1546,12 @@ remote_statement
 
 			new->remote = $2;
 			cur_rmconf = new;
+
+			prspec = newprspec();
+			if (prspec == NULL)
+				return -1;
+			prspec->lifetime = oakley_get_defaultlifetime();
+			insprspec(prspec, &cur_rmconf->prhead);
 		}
 		remote_specs_block
 	;
@@ -1715,6 +1568,7 @@ remote_specs_block
 			if (cur_rmconf->idvtype == IDTYPE_UNDEFINED)
 				cur_rmconf->idvtype = IDTYPE_ADDRESS;
 
+
 			if (cur_rmconf->idvtype == IDTYPE_ASN1DN) {
 				if (cur_rmconf->mycertfile) {
 					if (cur_rmconf->idv)
@@ -1729,24 +1583,17 @@ remote_specs_block
 					return -1;
 				}
 			}
-
-			if (duprmconf_finish(cur_rmconf))
-				return -1;
-
-#if 0
-			/* this pointer copy will never happen, because duprmconf_shallow
-			 * already copied all pointers.
-			 */
-			if (cur_rmconf->spspec == NULL &&
-			    cur_rmconf->inherited_from != NULL) {
-				cur_rmconf->spspec = cur_rmconf->inherited_from->spspec;
+			
+			if (cur_rmconf->prhead->spspec == NULL
+				&& cur_rmconf->inherited_from
+				&& cur_rmconf->inherited_from->prhead) {
+				cur_rmconf->prhead->spspec = cur_rmconf->inherited_from->prhead->spspec;
 			}
-#endif
-			if (set_isakmp_proposal(cur_rmconf) != 0)
+			if (set_isakmp_proposal(cur_rmconf, cur_rmconf->prhead) != 0)
 				return -1;
 
 			/* DH group settting if aggressive mode is there. */
-			if (check_etypeok(cur_rmconf, (void*) ISAKMP_ETYPE_AGG)) {
+			if (check_etypeok(cur_rmconf, ISAKMP_ETYPE_AGG) != NULL) {
 				struct isakmpsa *p;
 				int b = 0;
 
@@ -1801,16 +1648,7 @@ remote_specs
 	|	remote_specs remote_spec
 	;
 remote_spec
-	:	REMOTE_ADDRESS ike_addrinfo_port
-		{
-			if (cur_rmconf->remote != NULL) {
-				yyerror("remote_address already specified");
-				return -1;
-			}
-			cur_rmconf->remote = $2;
-		}
-		EOS
-	|	EXCHANGE_MODE
+	:	EXCHANGE_MODE
 		{
 			cur_rmconf->etypes = NULL;
 		}
@@ -1822,36 +1660,33 @@ remote_spec
 		{
 			yywarn("This directive without certtype will be removed!\n");
 			yywarn("Please use 'peers_certfile x509 \"%s\";' instead\n", $2->v);
+			cur_rmconf->getcert_method = ISAKMP_GETCERT_LOCALFILE;
 
-			if (cur_rmconf->peerscert != NULL) {
-				yyerror("peers_certfile already defined\n");
-				return -1;
-			}
-
-			if (load_x509($2->v, &cur_rmconf->peerscertfile,
-				      &cur_rmconf->peerscert)) {
-				yyerror("failed to load certificate \"%s\"\n",
-					$2->v);
-				return -1;
-			}
-
+			if (cur_rmconf->peerscertfile != NULL)
+				racoon_free(cur_rmconf->peerscertfile);
+			cur_rmconf->peerscertfile = racoon_strdup($2->v);
+			STRDUP_FATAL(cur_rmconf->peerscertfile);
 			vfree($2);
+		}
+		EOS
+	|	CA_TYPE CERT_X509 QUOTEDSTRING
+		{
+			cur_rmconf->cacerttype = $2;
+			cur_rmconf->getcacert_method = ISAKMP_GETCERT_LOCALFILE;
+			if (cur_rmconf->cacertfile != NULL)
+				racoon_free(cur_rmconf->cacertfile);
+			cur_rmconf->cacertfile = racoon_strdup($3->v);
+			STRDUP_FATAL(cur_rmconf->cacertfile);
+			vfree($3);
 		}
 		EOS
 	|	PEERS_CERTFILE CERT_X509 QUOTEDSTRING
 		{
-			if (cur_rmconf->peerscert != NULL) {
-				yyerror("peers_certfile already defined\n");
-				return -1;
-			}
-
-			if (load_x509($3->v, &cur_rmconf->peerscertfile,
-				      &cur_rmconf->peerscert)) {
-				yyerror("failed to load certificate \"%s\"\n",
-					$3->v);
-				return -1;
-			}
-
+			cur_rmconf->getcert_method = ISAKMP_GETCERT_LOCALFILE;
+			if (cur_rmconf->peerscertfile != NULL)
+				racoon_free(cur_rmconf->peerscertfile);
+			cur_rmconf->peerscertfile = racoon_strdup($3->v);
+			STRDUP_FATAL(cur_rmconf->peerscertfile);
 			vfree($3);
 		}
 		EOS
@@ -1860,66 +1695,37 @@ remote_spec
 			char path[MAXPATHLEN];
 			int ret = 0;
 
-			if (cur_rmconf->peerscert != NULL) {
-				yyerror("peers_certfile already defined\n");
-				return -1;
-			}
-
-			cur_rmconf->peerscert = vmalloc(1);
-			if (cur_rmconf->peerscert == NULL) {
-				yyerror("failed to allocate peerscert");
-				return -1;
-			}
-			cur_rmconf->peerscert->v[0] = ISAKMP_CERT_PLAINRSA;
-
 			getpathname(path, sizeof(path),
-				    LC_PATHTYPE_CERT, $3->v);
-			if (rsa_parse_file(cur_rmconf->rsa_public, path,
-					   RSA_TYPE_PUBLIC)) {
+				LC_PATHTYPE_CERT, $3->v);
+			vfree($3);
+
+			if (cur_rmconf->getcert_method == ISAKMP_GETCERT_DNS) {
+				yyerror("Different peers_certfile method "
+					"already defined: %d!\n",
+					cur_rmconf->getcert_method);
+				return -1;
+			}
+			cur_rmconf->getcert_method = ISAKMP_GETCERT_LOCALFILE;
+			if (rsa_parse_file(cur_rmconf->rsa_public, path, RSA_TYPE_PUBLIC)) {
 				yyerror("Couldn't parse keyfile.\n", path);
 				return -1;
 			}
-			plog(LLV_DEBUG, LOCATION, NULL,
-			     "Public PlainRSA keyfile parsed: %s\n", path);
-
-			vfree($3);
+			plog(LLV_DEBUG, LOCATION, NULL, "Public PlainRSA keyfile parsed: %s\n", path);
 		}
 		EOS
 	|	PEERS_CERTFILE DNSSEC
 		{
-			if (cur_rmconf->peerscert != NULL) {
-				yyerror("peers_certfile already defined\n");
+			if (cur_rmconf->getcert_method) {
+				yyerror("Different peers_certfile method already defined!\n");
 				return -1;
 			}
-			cur_rmconf->peerscert = vmalloc(1);
-			if (cur_rmconf->peerscert == NULL) {
-				yyerror("failed to allocate peerscert");
-				return -1;
-			}
-			cur_rmconf->peerscert->v[0] = ISAKMP_CERT_DNS;
-		}
-		EOS
-	|	CA_TYPE CERT_X509 QUOTEDSTRING
-		{
-			if (cur_rmconf->cacert != NULL) {
-				yyerror("ca_type already defined\n");
-				return -1;
-			}
-
-			if (load_x509($3->v, &cur_rmconf->cacertfile,
-				      &cur_rmconf->cacert)) {
-				yyerror("failed to load certificate \"%s\"\n",
-					$3->v);
-				return -1;
-			}
-
-			vfree($3);
+			cur_rmconf->getcert_method = ISAKMP_GETCERT_DNS;
+			cur_rmconf->peerscertfile = NULL;
 		}
 		EOS
 	|	VERIFY_CERT SWITCH { cur_rmconf->verify_cert = $2; } EOS
 	|	SEND_CERT SWITCH { cur_rmconf->send_cert = $2; } EOS
 	|	SEND_CR SWITCH { cur_rmconf->send_cr = $2; } EOS
-	|	MATCH_EMPTY_CR SWITCH { cur_rmconf->match_empty_cr = $2; } EOS
 	|	MY_IDENTIFIER IDENTIFIERTYPE identifierstring
 		{
 			if (set_identifier(&cur_rmconf->idv, $2, $3) != 0) {
@@ -2024,13 +1830,6 @@ remote_spec
 			cur_rmconf->script[SCRIPT_PHASE1_DOWN] = 
 			    script_path_add(vdup($2));
 		} EOS
-	|	SCRIPT QUOTEDSTRING PHASE1_DEAD { 
-			if (cur_rmconf->script[SCRIPT_PHASE1_DEAD] != NULL)
-				vfree(cur_rmconf->script[SCRIPT_PHASE1_DEAD]);
-
-			cur_rmconf->script[SCRIPT_PHASE1_DEAD] = 
-			    script_path_add(vdup($2));
-		} EOS
 	|	MODE_CFG SWITCH { cur_rmconf->mode_cfg = $2; } EOS
 	|	WEAK_PHASE1_CHECK SWITCH {
 			cur_rmconf->weak_phase1_check = $2;
@@ -2096,8 +1895,6 @@ remote_spec
 #endif
 		}
 		EOS
-	|	REKEY SWITCH { cur_rmconf->rekey = $2; } EOS
-	|	REKEY REMOTE_FORCE_LEVEL { cur_rmconf->rekey = REKEY_FORCE; } EOS
 	|	PH1ID NUMBER
 		{
 			cur_rmconf->ph1id = $2;
@@ -2105,7 +1902,7 @@ remote_spec
 		EOS
 	|	LIFETIME LIFETYPE_TIME NUMBER unittype_time
 		{
-			cur_rmconf->lifetime = $3 * $4;
+			cur_rmconf->prhead->lifetime = $3 * $4;
 		}
 		EOS
 	|	PROPOSAL_CHECK PROPOSAL_CHECK_LEVEL { cur_rmconf->pcheck_level = $2; } EOS
@@ -2117,8 +1914,8 @@ remote_spec
 #else
 			yywarn("the lifetime of bytes in phase 1 "
 				"will be ignored at the moment.");
-			cur_rmconf->lifebyte = fix_lifebyte($3 * $4);
-			if (cur_rmconf->lifebyte == 0)
+			cur_rmconf->prhead->lifebyte = fix_lifebyte($3 * $4);
+			if (cur_rmconf->prhead->lifebyte == 0)
 				return -1;
 #endif
 		}
@@ -2130,7 +1927,7 @@ remote_spec
 			spspec = newspspec();
 			if (spspec == NULL)
 				return -1;
-			insspspec(cur_rmconf, spspec);
+			insspspec(spspec, &cur_rmconf->prhead);
 		}
 		BOC isakmpproposal_specs EOC
 	;
@@ -2161,22 +1958,16 @@ exchange_types
 cert_spec
 	:	CERT_X509 QUOTEDSTRING QUOTEDSTRING
 		{
-			if (cur_rmconf->mycert != NULL) {
-				yyerror("certificate_type already defined\n");
-				return -1;
-			}
-
-			if (load_x509($2->v, &cur_rmconf->mycertfile,
-				      &cur_rmconf->mycert)) {
-				yyerror("failed to load certificate \"%s\"\n",
-					$2->v);
-				return -1;
-			}
-
+			cur_rmconf->certtype = $1;
+			if (cur_rmconf->mycertfile != NULL)
+				racoon_free(cur_rmconf->mycertfile);
+			cur_rmconf->mycertfile = racoon_strdup($2->v);
+			STRDUP_FATAL(cur_rmconf->mycertfile);
+			vfree($2);
+			if (cur_rmconf->myprivfile != NULL)
+				racoon_free(cur_rmconf->myprivfile);
 			cur_rmconf->myprivfile = racoon_strdup($3->v);
 			STRDUP_FATAL(cur_rmconf->myprivfile);
-
-			vfree($2);
 			vfree($3);
 		}
 		EOS
@@ -2185,31 +1976,19 @@ cert_spec
 			char path[MAXPATHLEN];
 			int ret = 0;
 
-			if (cur_rmconf->mycert != NULL) {
-				yyerror("certificate_type already defined\n");
-				return -1;
-			}
-
-			cur_rmconf->mycert = vmalloc(1);
-			if (cur_rmconf->mycert == NULL) {
-				yyerror("failed to allocate mycert");
-				return -1;
-			}
-			cur_rmconf->mycert->v[0] = ISAKMP_CERT_PLAINRSA;
-
 			getpathname(path, sizeof(path),
-				    LC_PATHTYPE_CERT, $2->v);
+				LC_PATHTYPE_CERT, $2->v);
+			vfree($2);
+
+			cur_rmconf->certtype = $1;
 			cur_rmconf->send_cr = FALSE;
 			cur_rmconf->send_cert = FALSE;
 			cur_rmconf->verify_cert = FALSE;
-			if (rsa_parse_file(cur_rmconf->rsa_private, path,
-					   RSA_TYPE_PRIVATE)) {
+			if (rsa_parse_file(cur_rmconf->rsa_private, path, RSA_TYPE_PRIVATE)) {
 				yyerror("Couldn't parse keyfile.\n", path);
 				return -1;
 			}
-			plog(LLV_DEBUG, LOCATION, NULL,
-			     "Private PlainRSA keyfile parsed: %s\n", path);
-			vfree($2);
+			plog(LLV_DEBUG, LOCATION, NULL, "Private PlainRSA keyfile parsed: %s\n", path);
 		}
 		EOS
 	;
@@ -2243,9 +2022,13 @@ isakmpproposal_specs
 	|	isakmpproposal_specs isakmpproposal_spec
 	;
 isakmpproposal_spec
-	:	LIFETIME LIFETYPE_TIME NUMBER unittype_time
+	:	STRENGTH
 		{
-			cur_rmconf->spspec->lifetime = $3 * $4;
+			yyerror("strength directive is obsoleted.");
+		} STRENGTHTYPE EOS
+	|	LIFETIME LIFETYPE_TIME NUMBER unittype_time
+		{
+			cur_rmconf->prhead->spspec->lifetime = $3 * $4;
 		}
 		EOS
 	|	LIFETIME LIFETYPE_BYTE NUMBER unittype_byte
@@ -2254,28 +2037,28 @@ isakmpproposal_spec
 			yyerror("byte lifetime support is deprecated");
 			return -1;
 #else
-			cur_rmconf->spspec->lifebyte = fix_lifebyte($3 * $4);
-			if (cur_rmconf->spspec->lifebyte == 0)
+			cur_rmconf->prhead->spspec->lifebyte = fix_lifebyte($3 * $4);
+			if (cur_rmconf->prhead->spspec->lifebyte == 0)
 				return -1;
 #endif
 		}
 		EOS
 	|	DH_GROUP dh_group_num
 		{
-			cur_rmconf->spspec->algclass[algclass_isakmp_dh] = $2;
+			cur_rmconf->prhead->spspec->algclass[algclass_isakmp_dh] = $2;
 		}
 		EOS
 	|	GSS_ID QUOTEDSTRING
 		{
-			if (cur_rmconf->spspec->vendorid != VENDORID_GSSAPI) {
+			if (cur_rmconf->prhead->spspec->vendorid != VENDORID_GSSAPI) {
 				yyerror("wrong Vendor ID for gssapi_id");
 				return -1;
 			}
-			if (cur_rmconf->spspec->gssid != NULL)
-				racoon_free(cur_rmconf->spspec->gssid);
-			cur_rmconf->spspec->gssid =
+			if (cur_rmconf->prhead->spspec->gssid != NULL)
+				racoon_free(cur_rmconf->prhead->spspec->gssid);
+			cur_rmconf->prhead->spspec->gssid = 
 			    racoon_strdup($2->v);
-			STRDUP_FATAL(cur_rmconf->spspec->gssid);
+			STRDUP_FATAL(cur_rmconf->prhead->spspec->gssid);
 		}
 		EOS
 	|	ALGORITHM_CLASS ALGORITHMTYPE keylength
@@ -2307,7 +2090,7 @@ isakmpproposal_spec
 				}
 #endif
 
-				cur_rmconf->spspec->algclass[algclass_isakmp_enc] = doi;
+				cur_rmconf->prhead->spspec->algclass[algclass_isakmp_enc] = doi;
 				defklen = default_keylen($1, $2);
 				if (defklen == 0) {
 					if ($3) {
@@ -2321,22 +2104,22 @@ isakmpproposal_spec
 					}
 				}
 				if ($3)
-					cur_rmconf->spspec->encklen = $3;
+					cur_rmconf->prhead->spspec->encklen = $3;
 				else
-					cur_rmconf->spspec->encklen = defklen;
+					cur_rmconf->prhead->spspec->encklen = defklen;
 				break;
 			case algclass_isakmp_hash:
-				cur_rmconf->spspec->algclass[algclass_isakmp_hash] = doi;
+				cur_rmconf->prhead->spspec->algclass[algclass_isakmp_hash] = doi;
 				break;
 			case algclass_isakmp_ameth:
-				cur_rmconf->spspec->algclass[algclass_isakmp_ameth] = doi;
+				cur_rmconf->prhead->spspec->algclass[algclass_isakmp_ameth] = doi;
 				/*
 				 * We may have to set the Vendor ID for the
 				 * authentication method we're using.
 				 */
 				switch ($2) {
 				case algtype_gssapikrb:
-					if (cur_rmconf->spspec->vendorid !=
+					if (cur_rmconf->prhead->spspec->vendorid !=
 					    VENDORID_UNKNOWN) {
 						yyerror("Vendor ID mismatch "
 						    "for auth method");
@@ -2346,19 +2129,19 @@ isakmpproposal_spec
 					 * For interoperability with Win2k,
 					 * we set the Vendor ID to "GSSAPI".
 					 */
-					cur_rmconf->spspec->vendorid =
+					cur_rmconf->prhead->spspec->vendorid =
 					    VENDORID_GSSAPI;
 					break;
 				case algtype_rsasig:
-					if (oakley_get_certtype(cur_rmconf->peerscert) == ISAKMP_CERT_PLAINRSA) {
+					if (cur_rmconf->certtype == ISAKMP_CERT_PLAINRSA) {
 						if (rsa_list_count(cur_rmconf->rsa_private) == 0) {
 							yyerror ("Private PlainRSA key not set. "
-								 "Use directive 'certificate_type plainrsa ...'\n");
+								"Use directive 'certificate_type plainrsa ...'\n");
 							return -1;
 						}
 						if (rsa_list_count(cur_rmconf->rsa_public) == 0) {
 							yyerror ("Public PlainRSA keys not set. "
-								 "Use directive 'peers_certfile plainrsa ...'\n");
+								"Use directive 'peers_certfile plainrsa ...'\n");
 							return -1;
 						}
 					}
@@ -2388,6 +2171,32 @@ unittype_byte
 	;
 %%
 
+static struct proposalspec *
+newprspec()
+{
+	struct proposalspec *new;
+
+	new = racoon_calloc(1, sizeof(*new));
+	if (new == NULL)
+		yyerror("failed to allocate proposal");
+
+	return new;
+}
+
+/*
+ * insert into head of list.
+ */
+static void
+insprspec(prspec, head)
+	struct proposalspec *prspec;
+	struct proposalspec **head;
+{
+	if (*head != NULL)
+		(*head)->prev = prspec;
+	prspec->next = *head;
+	*head = prspec;
+}
+
 static struct secprotospec *
 newspspec()
 {
@@ -2415,113 +2224,44 @@ newspspec()
  * insert into head of list.
  */
 static void
-insspspec(rmconf, spspec)
-	struct remoteconf *rmconf;
+insspspec(spspec, head)
 	struct secprotospec *spspec;
+	struct proposalspec **head;
 {
-	if (rmconf->spspec != NULL)
-		rmconf->spspec->prev = spspec;
-	spspec->next = rmconf->spspec;
-	rmconf->spspec = spspec;
-}
+	spspec->back = *head;
 
-static struct secprotospec *
-dupspspec(spspec)
-	struct secprotospec *spspec;
-{
-	struct secprotospec *new;
-
-	new = newspspec();
-	if (new == NULL) {
-		plog(LLV_ERROR, LOCATION, NULL, 
-		    "dupspspec: malloc failed\n");
-		return NULL;
-	}
-	memcpy(new, spspec, sizeof(*new));
-
-	if (spspec->gssid) {
-		new->gssid = racoon_strdup(spspec->gssid);
-		STRDUP_FATAL(new->gssid);
-	}
-	if (spspec->remote) {
-		new->remote = racoon_malloc(sizeof(*new->remote));
-		if (new->remote == NULL) {
-			plog(LLV_ERROR, LOCATION, NULL, 
-			    "dupspspec: malloc failed (remote)\n");
-			return NULL;
-		}
-		memcpy(new->remote, spspec->remote, sizeof(*new->remote));
-	}
-
-	return new;
-}
-
-/*
- * copy the whole list
- */
-void
-dupspspec_list(dst, src)
-	struct remoteconf *dst, *src;
-{
-	struct secprotospec *p, *new, *last;
-
-	for(p = src->spspec, last = NULL; p; p = p->next, last = new) {
-		new = dupspspec(p);
-		if (new == NULL)
-			exit(1);
-
-		new->prev = last;
-		new->next = NULL; /* not necessary but clean */
-
-		if (last)
-			last->next = new;
-		else /* first element */
-			dst->spspec = new;
-
-	}
-}
-
-/*
- * delete the whole list
- */
-void
-flushspspec(rmconf)
-	struct remoteconf *rmconf;
-{
-	struct secprotospec *p;
-
-	while(rmconf->spspec != NULL) {
-		p = rmconf->spspec;
-		rmconf->spspec = p->next;
-		if (p->next != NULL)
-			p->next->prev = NULL; /* not necessary but clean */
-
-		if (p->gssid)
-			racoon_free(p->gssid);
-		if (p->remote)
-			racoon_free(p->remote);
-		racoon_free(p);
-	}
-	rmconf->spspec = NULL;
+	if ((*head)->spspec != NULL)
+		(*head)->spspec->prev = spspec;
+	spspec->next = (*head)->spspec;
+	(*head)->spspec = spspec;
 }
 
 /* set final acceptable proposal */
 static int
-set_isakmp_proposal(rmconf)
+set_isakmp_proposal(rmconf, prspec)
 	struct remoteconf *rmconf;
+	struct proposalspec *prspec;
 {
+	struct proposalspec *p;
 	struct secprotospec *s;
 	int prop_no = 1; 
 	int trns_no = 1;
 	int32_t types[MAXALGCLASS];
 
+	p = prspec;
+	if (p->next != 0) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"multiple proposal definition.\n");
+		return -1;
+	}
+
 	/* mandatory check */
-	if (rmconf->spspec == NULL) {
+	if (p->spspec == NULL) {
 		yyerror("no remote specification found: %s.\n",
 			saddr2str(rmconf->remote));
 		return -1;
 	}
-	for (s = rmconf->spspec; s != NULL; s = s->next) {
+	for (s = p->spspec; s != NULL; s = s->next) {
 		/* XXX need more to check */
 		if (s->algclass[algclass_isakmp_enc] == 0) {
 			yyerror("encryption algorithm required.");
@@ -2542,16 +2282,16 @@ set_isakmp_proposal(rmconf)
 	}
 
 	/* skip to last part */
-	for (s = rmconf->spspec; s->next != NULL; s = s->next)
+	for (s = p->spspec; s->next != NULL; s = s->next)
 		;
 
 	while (s != NULL) {
 		plog(LLV_DEBUG2, LOCATION, NULL,
 			"lifetime = %ld\n", (long)
-			(s->lifetime ? s->lifetime : rmconf->lifetime));
+			(s->lifetime ? s->lifetime : p->lifetime));
 		plog(LLV_DEBUG2, LOCATION, NULL,
 			"lifebyte = %d\n",
-			s->lifebyte ? s->lifebyte : rmconf->lifebyte);
+			s->lifebyte ? s->lifebyte : p->lifebyte);
 		plog(LLV_DEBUG2, LOCATION, NULL,
 			"encklen=%d\n", s->encklen);
 
@@ -2566,8 +2306,8 @@ set_isakmp_proposal(rmconf)
 		clean_tmpalgtype();
 		trns_no = expand_isakmpspec(prop_no, trns_no, types,
 				algclass_isakmp_enc, algclass_isakmp_ameth + 1,
-				s->lifetime ? s->lifetime : rmconf->lifetime,
-				s->lifebyte ? s->lifebyte : rmconf->lifebyte,
+				s->lifetime ? s->lifetime : p->lifetime,
+				s->lifebyte ? s->lifebyte : p->lifebyte,
 				s->encklen, s->vendorid, s->gssid,
 				rmconf);
 		if (trns_no == -1) {
@@ -2672,7 +2412,11 @@ expand_isakmpspec(prop_no, trns_no, types,
 			}
 			memcpy(new->gssid->v, gssid, new->gssid->l);
 			racoon_free(gssid);
+#ifdef ENABLE_HYBRID
+		} else if (rmconf->xauth == NULL) {
+#else
 		} else {
+#endif
 			/*
 			 * Allocate the default ID so that it gets put
 			 * into a GSS ID attribute during the Phase 1
@@ -2685,6 +2429,30 @@ expand_isakmpspec(prop_no, trns_no, types,
 	insisakmpsa(new, rmconf);
 
 	return trns_no;
+}
+
+static int
+listen_addr (struct sockaddr *addr, int udp_encap)
+{
+	struct myaddrs *p;
+
+	p = newmyaddr();
+	if (p == NULL) {
+		yyerror("failed to allocate myaddrs");
+		return -1;
+	}
+	p->addr = addr;
+	if (p->addr == NULL) {
+		yyerror("failed to copy sockaddr ");
+		delmyaddr(p);
+		return -1;
+	}
+	p->udp_encap = udp_encap;
+
+	insmyaddr(p, &lcconf->myaddrs);
+
+	lcconf->autograbaddr = 0;
+	return 0;
 }
 
 #if 0
@@ -2711,7 +2479,6 @@ cfparse()
 {
 	int error;
 
-	yyerrorcount = 0;
 	yycf_init_buffer();
 
 	if (yycf_switch_buffer(lcconf->racoon_conf) != 0) {

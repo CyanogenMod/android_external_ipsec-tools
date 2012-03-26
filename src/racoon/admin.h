@@ -1,4 +1,4 @@
-/*	$NetBSD: admin.h,v 1.8 2010/11/12 09:08:26 tteras Exp $	*/
+/*	$NetBSD: admin.h,v 1.4 2006/09/09 16:22:09 manu Exp $	*/
 
 /* Id: admin.h,v 1.11 2005/06/19 22:37:47 manubsd Exp */
 
@@ -46,22 +46,9 @@ extern mode_t adminsock_mode;
 struct admin_com {
 	u_int16_t ac_len;	/* total packet length including data */
 	u_int16_t ac_cmd;
-	union {
-		int16_t ac_un_errno;
-		uint16_t ac_un_version;
-		uint16_t ac_un_len_high;
-	} u;
+	int16_t ac_errno;
 	u_int16_t ac_proto;
 };
-#define ac_errno u.ac_un_errno
-#define ac_version u.ac_un_version
-#define ac_len_high u.ac_un_len_high
-
-/*
- * Version field in request is valid.
- */
-#define ADMIN_FLAG_VERSION	0x8000
-#define ADMIN_FLAG_LONG_REPLY	0x8000
 
 /*
  * No data follows as the data.
@@ -84,8 +71,6 @@ struct admin_com {
 #define ADMIN_DELETE_SA		0x0201
 #define ADMIN_ESTABLISH_SA	0x0202
 #define ADMIN_DELETE_ALL_SA_DST	0x0204	/* All SA for a given peer */
-
-#define ADMIN_GET_SA_CERT	0x0206
 
 /*
  * The admin_com_indexes and admin_com_psk follow, see below.

@@ -1,4 +1,4 @@
-/*	$NetBSD: prsa_par.y,v 1.6 2011/03/02 14:49:21 vanhu Exp $	*/
+/*	$NetBSD: prsa_par.y,v 1.4 2006/09/09 16:22:10 manu Exp $	*/
 
 /* Id: prsa_par.y,v 1.3 2004/11/08 12:04:23 ludvigm Exp */
 
@@ -211,7 +211,6 @@ rsa_statement:
 			YYABORT;
 		}
 		$$ = base64_pubkey2rsa($2);
-		free($2);
 	}
 	| TAG_PUB HEX
 	{
@@ -237,7 +236,6 @@ addr4:
 	{
 		int err;
 		struct sockaddr_in *sap;
-		struct addrinfo hints, *res;
 		
 		if ($2 == -1) $2 = 32;
 		if ($2 < 0 || $2 > 32) {
@@ -247,17 +245,12 @@ addr4:
 		$$ = calloc (sizeof(struct netaddr), 1);
 		$$->prefix = $2;
 		sap = (struct sockaddr_in *)(&$$->sa);
-		memset(&hints, 0, sizeof(hints));
-		hints.ai_family = AF_INET;
-		hints.ai_flags = AI_NUMERICHOST;
-		err = getaddrinfo($1, NULL, &hints, &res);
-		if (err < 0) {
-			prsaerror("getaddrinfo(%s): %s\n", $1, gai_strerror(err));
+		sap->sin_family = AF_INET;
+		err = inet_pton(AF_INET, $1, (struct in_addr*)(&sap->sin_addr));
+		if (err <= 0) {
+			prsaerror("inet_pton(%s): %s\n", $1, strerror(errno));
 			YYABORT;
 		}
-		memcpy(sap, res->ai_addr, res->ai_addrlen);
-		freeaddrinfo(res);
-		free($1);
 	}
 	;
 
@@ -266,7 +259,6 @@ addr6:
 	{
 		int err;
 		struct sockaddr_in6 *sap;
-		struct addrinfo hints, *res;
 		
 		if ($2 == -1) $2 = 128;
 		if ($2 < 0 || $2 > 128) {
@@ -276,17 +268,12 @@ addr6:
 		$$ = calloc (sizeof(struct netaddr), 1);
 		$$->prefix = $2;
 		sap = (struct sockaddr_in6 *)(&$$->sa);
-		memset(&hints, 0, sizeof(hints));
-		hints.ai_family = AF_INET6;
-		hints.ai_flags = AI_NUMERICHOST;
-		err = getaddrinfo($1, NULL, &hints, &res);
-		if (err < 0) {
-			prsaerror("getaddrinfo(%s): %s\n", $1, gai_strerror(err));
+		sap->sin6_family = AF_INET6;
+		err = inet_pton(AF_INET6, $1, (struct in6_addr*)(&sap->sin6_addr));
+		if (err <= 0) {
+			prsaerror("inet_pton(%s): %s\n", $1, strerror(errno));
 			YYABORT;
 		}
-		memcpy(sap, res->ai_addr, res->ai_addrlen);
-		freeaddrinfo(res);
-		free($1);
 	}
 	;
 

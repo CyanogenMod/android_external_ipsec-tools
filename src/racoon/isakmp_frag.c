@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp_frag.c,v 1.5 2009/04/22 11:24:20 tteras Exp $	*/
+/*	$NetBSD: isakmp_frag.c,v 1.4.6.1 2009/04/22 11:25:35 tteras Exp $	*/
 
 /* Id: isakmp_frag.c,v 1.4 2004/11/13 17:31:36 manubsd Exp */
 

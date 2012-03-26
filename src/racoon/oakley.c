@@ -1,4 +1,4 @@
-/*	$NetBSD: oakley.c,v 1.22 2011/03/17 14:42:58 vanhu Exp $	*/
+/*	$NetBSD: oakley.c,v 1.9.6.4 2009/08/13 09:18:45 vanhu Exp $	*/
 
 /* Id: oakley.c,v 1.32 2006/05/26 12:19:46 manubsd Exp */
 
@@ -123,63 +123,13 @@ struct dhgroup dh_modp8192;
 
 static int oakley_check_dh_pub __P((vchar_t *, vchar_t **));
 static int oakley_compute_keymat_x __P((struct ph2handle *, int, int));
+static int get_cert_fromlocal __P((struct ph1handle *, int));
+static int get_plainrsa_fromlocal __P((struct ph1handle *, int));
 static int oakley_check_certid __P((struct ph1handle *iph1));
 static int check_typeofcertname __P((int, int));
+static cert_t *save_certbuf __P((struct isakmp_gen *));
+static cert_t *save_certx509 __P((X509 *));
 static int oakley_padlen __P((int, int));
-static int get_plainrsa_fromlocal __P((struct ph1handle *, int));
-
-int oakley_get_certtype(cert)
-	vchar_t *cert;
-{
-	if (cert == NULL)
-		return ISAKMP_CERT_NONE;
-
-	return cert->v[0];
-}
-
-static vchar_t *
-dump_isakmp_payload(gen)
-	struct isakmp_gen *gen;
-{
-	vchar_t p;
-
-	if (ntohs(gen->len) <= sizeof(*gen)) {
-		plog(LLV_ERROR, LOCATION, NULL,
-		     "Len is too small !!.\n");
-		return NULL;
-	}
-
-	p.v = (caddr_t) (gen + 1);
-	p.l = ntohs(gen->len) - sizeof(*gen);
-
-	return vdup(&p);
-}
-
-static vchar_t *
-dump_x509(cert)
-	X509 *cert;
-{
-	vchar_t *pl;
-	u_char *bp;
-	int len;
-
-	len = i2d_X509(cert, NULL);
-
-	pl = vmalloc(len + 1);
-	if (pl == NULL) {
-		plog(LLV_ERROR, LOCATION, NULL,
-		     "Failed to copy CERT from packet.\n");
-		return NULL;
-	}
-
-	pl->v[0] = ISAKMP_CERT_X509SIGN;
-	bp = (u_char *) &pl->v[1];
-	i2d_X509(cert, &bp);
-
-	return pl;
-}
-
-
 
 int
 oakley_get_defaultlifetime()
@@ -468,7 +418,7 @@ oakley_hash(buf, iph1)
 	res = alg_oakley_hashdef_one(type, buf);
 	if (res == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid hash algorithm %d.\n", type);
+			"invalid hash algoriym %d.\n", type);
 		return NULL;
 	}
 
@@ -908,7 +858,7 @@ oakley_ph1hash_common(iph1, sw)
 		+ (sw == GENERATE ? iph1->id->l : iph1->id_p->l);
 
 #ifdef HAVE_GSSAPI
-	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB) {
+	if (AUTHMETHOD(iph1) == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB) {
 		if (iph1->gi_i != NULL && iph1->gi_r != NULL) {
 			bp = (sw == GENERATE ? iph1->gi_i : iph1->gi_r);
 			len += bp->l;
@@ -969,7 +919,7 @@ oakley_ph1hash_common(iph1, sw)
 	p += bp->l;
 
 #ifdef HAVE_GSSAPI
-	if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB) {
+	if (AUTHMETHOD(iph1) == OAKLEY_ATTR_AUTH_METHOD_GSSAPI_KRB) {
 		if (iph1->gi_i != NULL && iph1->gi_r != NULL) {
 			bp = (sw == GENERATE ? iph1->gi_i : iph1->gi_r);
 			memcpy(p, bp->v, bp->l);
@@ -1030,7 +980,7 @@ oakley_ph1hash_base_i(iph1, sw)
 		return NULL;
 	}
 
-	switch (iph1->approval->authmethod) {
+	switch (AUTHMETHOD(iph1)) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 	case OAKLEY_ATTR_AUTH_METHOD_RSAENC:
 	case OAKLEY_ATTR_AUTH_METHOD_RSAREV:
@@ -1039,7 +989,7 @@ oakley_ph1hash_base_i(iph1, sw)
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAENC_R:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_I:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSAREV_R:
-	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
+	case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
 #endif
 		if (iph1->skeyid == NULL) {
@@ -1171,7 +1121,7 @@ oakley_ph1hash_base_r(iph1, sw)
 		return NULL;
 	}
 
-	switch (iph1->approval->authmethod) {
+	switch(AUTHMETHOD(iph1)) {
 	case OAKLEY_ATTR_AUTH_METHOD_DSSSIG:
 	case OAKLEY_ATTR_AUTH_METHOD_RSASIG:
 #ifdef ENABLE_HYBRID
@@ -1183,7 +1133,7 @@ oakley_ph1hash_base_r(iph1, sw)
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_RSASIG_R:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_I:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_DSSSIG_R:
-	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
+	case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
 #endif
 		break;
 	default:
@@ -1299,10 +1249,10 @@ oakley_validate_auth(iph1)
 	gettimeofday(&start, NULL);
 #endif
 
-	switch (iph1->approval->authmethod) {
+	switch (AUTHMETHOD(iph1)) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 #ifdef ENABLE_HYBRID
-	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
+	case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
 #endif
 		/* validate HASH */
@@ -1315,7 +1265,7 @@ oakley_validate_auth(iph1)
 			return ISAKMP_NTYPE_PAYLOAD_MALFORMED;
 		}
 #ifdef ENABLE_HYBRID
-		if (iph1->approval->authmethod == OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I &&
+		if (AUTHMETHOD(iph1) == FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I &&
 		    ((iph1->mode_cfg->flags & ISAKMP_CFG_VENDORID_XAUTH) == 0))
 		{
 			plog(LLV_ERROR, LOCATION, NULL, "No SIG was passed, "
@@ -1373,7 +1323,7 @@ oakley_validate_auth(iph1)
 #endif
 	    {
 		int error = 0;
-		int certtype;
+		int certtype = 0;
 
 		/* validation */
 		if (iph1->id_p == NULL) {
@@ -1391,104 +1341,132 @@ oakley_validate_auth(iph1)
 		plogdump(LLV_DEBUG, iph1->sig_p->v, iph1->sig_p->l);
 
 		/* get peer's cert */
-		certtype = oakley_get_certtype(iph1->rmconf->peerscert);
-		switch (certtype) {
-		case ISAKMP_CERT_NONE:
-			/* expect to receive one from peer */
+		switch (iph1->rmconf->getcert_method) {
+		case ISAKMP_GETCERT_PAYLOAD:
 			if (iph1->cert_p == NULL) {
 				plog(LLV_ERROR, LOCATION, NULL,
-				     "no peer's CERT payload found.\n");
+					"no peer's CERT payload found.\n");
 				return ISAKMP_INTERNAL_ERROR;
-			}
-			/* verify the cert if needed */
-			if (!iph1->rmconf->verify_cert)
-				break;
-
-			switch (oakley_get_certtype(iph1->cert_p)) {
-			case ISAKMP_CERT_X509SIGN: {
-				char path[MAXPATHLEN];
-				char *ca;
-
-				if (iph1->rmconf->cacertfile != NULL) {
-					getpathname(path, sizeof(path),
-						    LC_PATHTYPE_CERT,
-						    iph1->rmconf->cacertfile);
-					ca = path;
-				} else {
-					ca = NULL;
-				}
-
-				error = eay_check_x509cert(
-					iph1->cert_p,
-					lcconf->pathinfo[LC_PATHTYPE_CERT],
-					ca, 0);
-				break;
-				}
-			default:
-				plog(LLV_ERROR, LOCATION, NULL,
-					"peers_cert certtype %d was not expected\n",
-					certtype);
-				return ISAKMP_INTERNAL_ERROR;
-			}
-
-			if (error != 0) {
-				plog(LLV_ERROR, LOCATION, NULL,
-				     "the peer's certificate is not verified.\n");
-				return ISAKMP_NTYPE_INVALID_CERT_AUTHORITY;
 			}
 			break;
-		case ISAKMP_CERT_X509SIGN:
-			if (iph1->rmconf->peerscert == NULL) {
+		case ISAKMP_GETCERT_LOCALFILE:
+			switch (iph1->rmconf->certtype) {
+				case ISAKMP_CERT_X509SIGN:
+					if (iph1->rmconf->peerscertfile == NULL) {
+						plog(LLV_ERROR, LOCATION, NULL,
+							"no peer's CERT file found.\n");
+						return ISAKMP_INTERNAL_ERROR;
+					}
+
+					/* don't use cached cert */
+					if (iph1->cert_p != NULL) {
+						oakley_delcert(iph1->cert_p);
+						iph1->cert_p = NULL;
+					}
+
+					error = get_cert_fromlocal(iph1, 0);
+#ifdef ANDROID_PATCHED
+					if (!error)
+						break;
+				default:
+					return ISAKMP_INTERNAL_ERROR;
+#else
+					break;
+
+				case ISAKMP_CERT_PLAINRSA:
+					error = get_plainrsa_fromlocal(iph1, 0);
+					break;
+			}
+			if (error)
+				return ISAKMP_INTERNAL_ERROR;
+			break;
+		case ISAKMP_GETCERT_DNS:
+			if (iph1->rmconf->peerscertfile != NULL) {
 				plog(LLV_ERROR, LOCATION, NULL,
-				     "no peer's CERT file found.\n");
+					"why peer's CERT file is defined "
+					"though getcert method is dns ?\n");
 				return ISAKMP_INTERNAL_ERROR;
 			}
-			/* don't use received cert */
+
+			/* don't use cached cert */
 			if (iph1->cert_p != NULL) {
-				vfree(iph1->cert_p);
-				iph1->cert_p = NULL;
-			}
-			/* copy from remoteconf instead */
-			iph1->cert_p = vdup(iph1->rmconf->peerscert);
-			break;
-#ifndef ANDROID_PATCHED
-		case ISAKMP_CERT_PLAINRSA:
-			if (get_plainrsa_fromlocal(iph1, 0))
-				return ISAKMP_INTERNAL_ERROR;
-			break;
-		case ISAKMP_CERT_DNS:
-			/* don't use received cert */
-			if (iph1->cert_p != NULL) {
-				vfree(iph1->cert_p);
+				oakley_delcert(iph1->cert_p);
 				iph1->cert_p = NULL;
 			}
 
 			iph1->cert_p = dnssec_getcert(iph1->id_p);
 			if (iph1->cert_p == NULL) {
 				plog(LLV_ERROR, LOCATION, NULL,
-				     "no CERT RR found.\n");
+					"no CERT RR found.\n");
 				return ISAKMP_INTERNAL_ERROR;
+#endif
 			}
 			break;
-#endif
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
-			     "invalid certificate type: %d\n",
-			     oakley_get_certtype(iph1->rmconf->peerscert));
+				"invalid getcert_mothod: %d\n",
+				iph1->rmconf->getcert_method);
 			return ISAKMP_INTERNAL_ERROR;
 		}
 
 		/* compare ID payload and certificate name */
-		if ((error = oakley_check_certid(iph1)) != 0)
+		if (iph1->rmconf->verify_cert &&
+		    (error = oakley_check_certid(iph1)) != 0)
 			return error;
 
-		/* Generate a warning if verify_cert */
-		if (iph1->rmconf->verify_cert) {
-			plog(LLV_DEBUG, LOCATION, NULL,
-			     "CERT validated\n");
-		} else {
+		/* verify certificate */
+		if (iph1->rmconf->verify_cert
+		 && iph1->rmconf->getcert_method == ISAKMP_GETCERT_PAYLOAD) {
+			certtype = iph1->rmconf->certtype;
+#ifdef ENABLE_HYBRID
+			switch (AUTHMETHOD(iph1)) {
+			case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I:
+			case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I:
+				certtype = iph1->cert_p->type;
+				break;
+			default:
+				break;
+			}
+#endif
+			switch (certtype) {
+			case ISAKMP_CERT_X509SIGN: {
+				char path[MAXPATHLEN];
+				char *ca;
+
+				if (iph1->rmconf->cacertfile != NULL) {
+					getpathname(path, sizeof(path), 
+					    LC_PATHTYPE_CERT, 
+					    iph1->rmconf->cacertfile);
+					ca = path;
+				} else {
+					ca = NULL;
+				}
+
+				error = eay_check_x509cert(&iph1->cert_p->cert,
+					lcconf->pathinfo[LC_PATHTYPE_CERT], 
+					ca, 0);
+				break;
+			}
+			
+			default:
+				plog(LLV_ERROR, LOCATION, NULL,
+					"no supported certtype %d\n", certtype);
+				return ISAKMP_INTERNAL_ERROR;
+			}
+			if (error != 0) {
+				plog(LLV_ERROR, LOCATION, NULL,
+					"the peer's certificate is not verified.\n");
+				return ISAKMP_NTYPE_INVALID_CERT_AUTHORITY;
+			}
+		}
+	
+		/* Generate a warning if verify_cert == 0
+		 */
+		if (iph1->rmconf->verify_cert){
+			plog(LLV_DEBUG, LOCATION, NULL, "CERT validated\n");
+		}else{
 			plog(LLV_WARNING, LOCATION, NULL,
-			     "CERT validation disabled by configuration\n");
+				"CERT validation disabled by configuration\n");
 		}
 
 		/* compute hash */
@@ -1511,30 +1489,38 @@ oakley_validate_auth(iph1)
 		if (my_hash == NULL)
 			return ISAKMP_INTERNAL_ERROR;
 
+
+		certtype = iph1->rmconf->certtype;
+#ifdef ENABLE_HYBRID
+		switch (AUTHMETHOD(iph1)) {
+		case OAKLEY_ATTR_AUTH_METHOD_HYBRID_RSA_I:
+		case OAKLEY_ATTR_AUTH_METHOD_HYBRID_DSS_I:
+			certtype = iph1->cert_p->type;
+			break;
+		default:
+			break;
+		}
+#endif
 		/* check signature */
-		certtype = oakley_get_certtype(iph1->cert_p);
-		if (certtype == ISAKMP_CERT_NONE)
-			certtype = oakley_get_certtype(iph1->rmconf->peerscert);
 		switch (certtype) {
 		case ISAKMP_CERT_X509SIGN:
 		case ISAKMP_CERT_DNS:
 			error = eay_check_x509sign(my_hash,
-						   iph1->sig_p,
-						   iph1->cert_p);
+					iph1->sig_p,
+					&iph1->cert_p->cert);
 			break;
 #ifndef ANDROID_PATCHED
 		case ISAKMP_CERT_PLAINRSA:
 			iph1->rsa_p = rsa_try_check_rsasign(my_hash,
 					iph1->sig_p, iph1->rsa_candidates);
 			error = iph1->rsa_p ? 0 : -1;
-			genlist_free(iph1->rsa_candidates, NULL);
-			iph1->rsa_candidates = NULL;
+
 			break;
 #endif
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
-			     "cannot check signature for certtype %d\n",
-			     certtype);
+				"no supported certtype %d\n",
+				certtype);
 			vfree(my_hash);
 			return ISAKMP_INTERNAL_ERROR;
 		}
@@ -1648,26 +1634,115 @@ int
 oakley_getmycert(iph1)
 	struct ph1handle *iph1;
 {
-	switch (oakley_get_certtype(iph1->rmconf->mycert)) {
-	case ISAKMP_CERT_X509SIGN:
-		if (iph1->cert)
-			return 0;
-		iph1->cert = vdup(iph1->rmconf->mycert);
-		break;
+	switch (iph1->rmconf->certtype) {
+		case ISAKMP_CERT_X509SIGN:
+			if (iph1->cert)
+				return 0;
+			return get_cert_fromlocal(iph1, 1);
+
 #ifndef ANDROID_PATCHED
-	case ISAKMP_CERT_PLAINRSA:
-		if (iph1->rsa)
-			return 0;
-		return get_plainrsa_fromlocal(iph1, 1);
+		case ISAKMP_CERT_PLAINRSA:
+			if (iph1->rsa)
+				return 0;
+			return get_plainrsa_fromlocal(iph1, 1);
 #endif
-	default:
-		plog(LLV_ERROR, LOCATION, NULL,
-		     "Unknown certtype #%d\n",
-		     oakley_get_certtype(iph1->rmconf->mycert));
-		return -1;
+
+		default:
+			plog(LLV_ERROR, LOCATION, NULL,
+			     "Unknown certtype #%d\n",
+			     iph1->rmconf->certtype);
+			return -1;
 	}
 
-	return 0;
+}
+
+/*
+ * get a CERT from local file.
+ * IN:
+ *	my != 0 my cert.
+ *	my == 0 peer's cert.
+ */
+static int
+get_cert_fromlocal(iph1, my)
+	struct ph1handle *iph1;
+	int my;
+{
+	char path[MAXPATHLEN];
+	vchar_t *cert = NULL;
+	cert_t **certpl;
+	char *certfile;
+	int error = -1;
+
+	if (my) {
+		certfile = iph1->rmconf->mycertfile;
+		certpl = &iph1->cert;
+	} else {
+		certfile = iph1->rmconf->peerscertfile;
+		certpl = &iph1->cert_p;
+	}
+	if (!certfile) {
+		plog(LLV_ERROR, LOCATION, NULL, "no CERT defined.\n");
+		return 0;
+	}
+
+	switch (iph1->rmconf->certtype) {
+	case ISAKMP_CERT_X509SIGN:
+	case ISAKMP_CERT_DNS:
+		/* make public file name */
+		getpathname(path, sizeof(path), LC_PATHTYPE_CERT, certfile);
+		cert = eay_get_x509cert(path);
+		if (cert) {
+			char *p = NULL;
+			p = eay_get_x509text(cert);
+			plog(LLV_DEBUG, LOCATION, NULL, "%s", p ? p : "\n");
+			racoon_free(p);
+		};
+		break;
+
+	default:
+		plog(LLV_ERROR, LOCATION, NULL,
+			"not supported certtype %d\n",
+			iph1->rmconf->certtype);
+		goto end;
+	}
+
+	if (!cert) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"failed to get %s CERT.\n",
+			my ? "my" : "peers");
+		goto end;
+	}
+
+	*certpl = oakley_newcert();
+	if (!*certpl) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"failed to get cert buffer.\n");
+		goto end;
+	}
+	(*certpl)->pl = vmalloc(cert->l + 1);
+	if ((*certpl)->pl == NULL) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"failed to get cert buffer\n");
+		oakley_delcert(*certpl);
+		*certpl = NULL;
+		goto end;
+	}
+	memcpy((*certpl)->pl->v + 1, cert->v, cert->l);
+	(*certpl)->pl->v[0] = iph1->rmconf->certtype;
+	(*certpl)->type = iph1->rmconf->certtype;
+	(*certpl)->cert.v = (*certpl)->pl->v + 1;
+	(*certpl)->cert.l = (*certpl)->pl->l - 1;
+
+	plog(LLV_DEBUG, LOCATION, NULL, "created CERT payload:\n");
+	plogdump(LLV_DEBUG, (*certpl)->pl->v, (*certpl)->pl->l);
+
+	error = 0;
+
+end:
+	if (cert != NULL)
+		vfree(cert);
+
+	return error;
 }
 
 #ifndef ANDROID_PATCHED
@@ -1733,7 +1808,7 @@ oakley_getsign(iph1)
 	vchar_t *privkey = NULL;
 	int error = -1;
 
-	switch (oakley_get_certtype(iph1->rmconf->mycert)) {
+	switch (iph1->rmconf->certtype) {
 	case ISAKMP_CERT_X509SIGN:
 	case ISAKMP_CERT_DNS:
 		if (iph1->rmconf->myprivfile == NULL) {
@@ -1753,6 +1828,7 @@ oakley_getsign(iph1)
 		}
 		plog(LLV_DEBUG2, LOCATION, NULL, "private key:\n");
 		plogdump(LLV_DEBUG2, privkey->v, privkey->l);
+
 		iph1->sig = eay_get_x509sign(iph1->hash, privkey);
 		break;
 #ifndef ANDROID_PATCHED
@@ -1763,7 +1839,7 @@ oakley_getsign(iph1)
 	default:
 		plog(LLV_ERROR, LOCATION, NULL,
 		     "Unknown certtype #%d\n",
-		     oakley_get_certtype(iph1->rmconf->mycert));
+		     iph1->rmconf->certtype);
 		goto end;
 	}
 
@@ -1797,11 +1873,8 @@ oakley_check_certid(iph1)
 	int idlen, type;
 	int error;
 
-	if (iph1->rmconf == NULL || iph1->rmconf->verify_cert == FALSE)
-		return 0;
-
 	if (iph1->id_p == NULL || iph1->cert_p == NULL) {
-		plog(LLV_ERROR, LOCATION, iph1->remote, "no ID nor CERT found.\n");
+		plog(LLV_ERROR, LOCATION, NULL, "no ID nor CERT found.\n");
 		return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
 	}
 
@@ -1810,30 +1883,27 @@ oakley_check_certid(iph1)
 
 	switch (id_b->type) {
 	case IPSECDOI_ID_DER_ASN1_DN:
-		name = eay_get_x509asn1subjectname(iph1->cert_p);
+		name = eay_get_x509asn1subjectname(&iph1->cert_p->cert);
 		if (!name) {
-			plog(LLV_ERROR, LOCATION, iph1->remote,
+			plog(LLV_ERROR, LOCATION, NULL,
 				"failed to get subjectName\n");
 			return ISAKMP_NTYPE_INVALID_CERTIFICATE;
 		}
 		if (idlen != name->l) {
-			plog(LLV_ERROR, LOCATION, iph1->remote,
+			plog(LLV_ERROR, LOCATION, NULL,
 				"Invalid ID length in phase 1.\n");
 			vfree(name);
 			return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
 		}
 		error = memcmp(id_b + 1, name->v, idlen);
+		vfree(name);
 		if (error != 0) {
-			plog(LLV_ERROR, LOCATION, iph1->remote,
+			plog(LLV_ERROR, LOCATION, NULL,
 				"ID mismatched with ASN1 SubjectName.\n");
 			plogdump(LLV_DEBUG, id_b + 1, idlen);
 			plogdump(LLV_DEBUG, name->v, idlen);
-			if (iph1->rmconf->verify_identifier) {
-				vfree(name);
-				return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
-			}
+			return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
 		}
-		vfree(name);
 		return 0;
 	case IPSECDOI_ID_IPV4_ADDR:
 	case IPSECDOI_ID_IPV6_ADDR:
@@ -1848,7 +1918,7 @@ oakley_check_certid(iph1)
 		int pos;
 
 		for (pos = 1; ; pos++) {
-			if (eay_get_x509subjectaltname(iph1->cert_p,
+			if (eay_get_x509subjectaltname(&iph1->cert_p->cert,
 					&altname, &type, pos) !=0) {
 				plog(LLV_ERROR, LOCATION, NULL,
 					"failed to get subjectAltName\n");
@@ -1874,11 +1944,10 @@ oakley_check_certid(iph1)
 		hints.ai_socktype = SOCK_RAW;
 		hints.ai_flags = AI_NUMERICHOST;
 		error = getaddrinfo(altname, NULL, &hints, &res);
-		racoon_free(altname);
-		altname = NULL;
 		if (error != 0) {
 			plog(LLV_ERROR, LOCATION, NULL,
 				"no proper subjectAltName.\n");
+			racoon_free(altname);
 			return ISAKMP_NTYPE_INVALID_CERTIFICATE;
 		}
 		switch (res->ai_family) {
@@ -1893,6 +1962,7 @@ oakley_check_certid(iph1)
 		default:
 			plog(LLV_ERROR, LOCATION, NULL,
 				"family not supported: %d.\n", res->ai_family);
+			racoon_free(altname);
 			freeaddrinfo(res);
 			return ISAKMP_NTYPE_INVALID_CERTIFICATE;
 		}
@@ -1904,8 +1974,7 @@ oakley_check_certid(iph1)
 				"ID mismatched with subjectAltName.\n");
 			plogdump(LLV_DEBUG, id_b + 1, idlen);
 			plogdump(LLV_DEBUG, a, idlen);
-			if (iph1->rmconf->verify_identifier)
-				return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
+			return ISAKMP_NTYPE_INVALID_ID_INFORMATION;
 		}
 		return 0;
 	}
@@ -1915,7 +1984,7 @@ oakley_check_certid(iph1)
 		int pos;
 
 		for (pos = 1; ; pos++) {
-			if (eay_get_x509subjectaltname(iph1->cert_p,
+			if (eay_get_x509subjectaltname(&iph1->cert_p->cert,
 					&altname, &type, pos) != 0){
 				plog(LLV_ERROR, LOCATION, NULL,
 					"failed to get subjectAltName\n");
@@ -2009,7 +2078,7 @@ oakley_savecert(iph1, gen)
 	struct ph1handle *iph1;
 	struct isakmp_gen *gen;
 {
-	vchar_t **c;
+	cert_t **c;
 	u_int8_t type;
 	STACK_OF(X509) *certs=NULL;
 	PKCS7 *p7;
@@ -2104,7 +2173,7 @@ oakley_savecert(iph1, gen)
 			     "Trying PKCS#7 cert %d.\n", i);
 
 			/* We'll just try each cert in turn */
-			*c = dump_x509(cert);
+			*c = save_certx509(cert);
 
 			if (!*c) {
 				plog(LLV_ERROR, LOCATION, NULL,
@@ -2116,18 +2185,19 @@ oakley_savecert(iph1, gen)
 			 * XXX If verify cert is disabled, we still just take
 			 * the first certificate....
 			 */
-			if (oakley_check_certid(iph1)) {
+			if(iph1->rmconf->verify_cert &&
+			   oakley_check_certid(iph1)) {
 				plog(LLV_DEBUG, LOCATION, NULL,
 				     "Discarding CERT: does not match ID.\n");
-				vfree((*c));
+				oakley_delcert((*c));
 				*c = NULL;
 				continue;
 			}
 
 			{
-				char *p = eay_get_x509text(*c);
+				char *p = eay_get_x509text(&(*c)->cert);
 				plog(LLV_DEBUG, LOCATION, NULL, "CERT saved:\n");
-				plogdump(LLV_DEBUG, (*c)->v, (*c)->l);
+				plogdump(LLV_DEBUG, (*c)->cert.v, (*c)->cert.l);
 				plog(LLV_DEBUG, LOCATION, NULL, "%s", 
 				     p ? p : "\n");
 				racoon_free(p);
@@ -2135,15 +2205,21 @@ oakley_savecert(iph1, gen)
 			break;
 		}
 		PKCS7_free(p7);
+
 	} else {
-		*c = dump_isakmp_payload(gen);
+		*c = save_certbuf(gen);
 		if (!*c) {
 			plog(LLV_ERROR, LOCATION, NULL,
 			     "Failed to get CERT buffer.\n");
 			return -1;
 		}
 
-		switch (type) {
+		switch ((*c)->type) {
+		case ISAKMP_CERT_DNS:
+			plog(LLV_WARNING, LOCATION, NULL,
+			     "CERT payload is unnecessary in DNSSEC. "
+			     "ignore it.\n");
+			return 0;
 		case ISAKMP_CERT_PGP:
 		case ISAKMP_CERT_X509SIGN:
 		case ISAKMP_CERT_KERBEROS:
@@ -2152,32 +2228,33 @@ oakley_savecert(iph1, gen)
 			 * XXX If verify cert is disabled, we still just take
 			 * the first certificate....
 			 */
-			if (oakley_check_certid(iph1)){
+			if(iph1->rmconf->verify_cert &&
+			   oakley_check_certid(iph1)){
 				plog(LLV_DEBUG, LOCATION, NULL,
 				     "Discarding CERT: does not match ID.\n");
-				vfree((*c));
+				oakley_delcert((*c));
 				*c = NULL;
 				return 0;
 			}
 
 			{
-				char *p = eay_get_x509text(*c);
+				char *p = eay_get_x509text(&(*c)->cert);
 				plog(LLV_DEBUG, LOCATION, NULL, "CERT saved:\n");
-				plogdump(LLV_DEBUG, (*c)->v, (*c)->l);
+				plogdump(LLV_DEBUG, (*c)->cert.v, (*c)->cert.l);
 				plog(LLV_DEBUG, LOCATION, NULL, "%s", p ? p : "\n");
 				racoon_free(p);
 			}
 			break;
 		case ISAKMP_CERT_CRL:
 			plog(LLV_DEBUG, LOCATION, NULL, "CRL saved:\n");
-			plogdump(LLV_DEBUG, (*c)->v, (*c)->l);
+			plogdump(LLV_DEBUG, (*c)->cert.v, (*c)->cert.l);
 			break;
 		case ISAKMP_CERT_X509KE:
 		case ISAKMP_CERT_X509ATTR:
 		case ISAKMP_CERT_ARL:
 		default:
 			/* XXX */
-			vfree(*c);
+			oakley_delcert((*c));
 			*c = NULL;
 			return 0;
 		}
@@ -2194,11 +2271,11 @@ oakley_savecr(iph1, gen)
 	struct ph1handle *iph1;
 	struct isakmp_gen *gen;
 {
-	vchar_t *cert;
-	vchar_t **c;
+	cert_t **c;
 	u_int8_t type;
 
 	type = *(u_int8_t *)(gen + 1) & 0xff;
+
 	switch (type) {
 	case ISAKMP_CERT_DNS:
 		plog(LLV_WARNING, LOCATION, NULL,
@@ -2224,109 +2301,119 @@ oakley_savecr(iph1, gen)
 		return -1;
 	}
 
-	/* Already found an acceptable CR? */
-	if (*c != NULL)
-		return 0;
-
-	cert = dump_isakmp_payload(gen);
-	if (cert == NULL) {
+	*c = save_certbuf(gen);
+	if (!*c) {
 		plog(LLV_ERROR, LOCATION, NULL,
 			"Failed to get CR buffer.\n");
 		return -1;
 	}
 
-	plog(LLV_DEBUG, LOCATION, NULL, "CR received:\n");
-	plogdump(LLV_DEBUG, cert->v, cert->l);
+	plog(LLV_DEBUG, LOCATION, NULL, "CR saved:\n");
+	plogdump(LLV_DEBUG, (*c)->cert.v, (*c)->cert.l);
 
-	*c = cert;
-	if (resolveph1rmconf(iph1) == 0) {
-		/* Found unique match */
-		plog(LLV_DEBUG, LOCATION, NULL, "CR saved.\n");
-	} else {
-		/* Still ambiguous or matches nothing, ignore this CR */
-		*c = NULL;
-		vfree(cert);
-	}
 	return 0;
 }
 
-/*
- * Add a single CR.
- */
-struct append_cr_ctx {
-	struct ph1handle *iph1;
-	struct payload_list *plist;
-};
-
-static int
-oakley_append_rmconf_cr(rmconf, ctx)
-	struct remoteconf *rmconf;
-	void *ctx;
+static cert_t *
+save_certbuf(gen)
+	struct isakmp_gen *gen;
 {
-	struct append_cr_ctx *actx = (struct append_cr_ctx *) ctx;
-	vchar_t *buf, *asn1dn = NULL;
-	int type;
+	cert_t *new;
 
-	/* Do we want to send CR about this? */
-	if (rmconf->send_cr == FALSE)
-		return 0;
-
-	if (rmconf->peerscert != NULL) {
-		type = oakley_get_certtype(rmconf->peerscert);
-		asn1dn = eay_get_x509asn1issuername(rmconf->peerscert);
-	} else if (rmconf->cacert != NULL) {
-		type = oakley_get_certtype(rmconf->cacert);
-		asn1dn = eay_get_x509asn1subjectname(rmconf->cacert);
-	} else
-		return 0;
-
-	if (asn1dn == NULL) {
-		plog(LLV_ERROR, LOCATION, actx->iph1->remote,
-		     "Failed to get CR ASN1 DN from certificate\n");
-		return 0;
+	if(ntohs(gen->len) <= sizeof(*gen)){
+		plog(LLV_ERROR, LOCATION, NULL,
+			 "Len is too small !!.\n");
+		return NULL;
 	}
 
-	buf = vmalloc(1 + asn1dn->l);
-	if (buf == NULL)
-		goto err;
+	new = oakley_newcert();
+	if (!new) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"Failed to get CERT buffer.\n");
+		return NULL;
+	}
 
-	buf->v[0] = type;
-	memcpy(&buf->v[1], asn1dn->v, asn1dn->l);
+	new->pl = vmalloc(ntohs(gen->len) - sizeof(*gen));
+	if (new->pl == NULL) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"Failed to copy CERT from packet.\n");
+		oakley_delcert(new);
+		new = NULL;
+		return NULL;
+	}
+	memcpy(new->pl->v, gen + 1, new->pl->l);
+	new->type = new->pl->v[0] & 0xff;
+	new->cert.v = new->pl->v + 1;
+	new->cert.l = new->pl->l - 1;
 
-	plog(LLV_DEBUG, LOCATION, actx->iph1->remote,
-	     "appending CR: %s\n",
-	     s_isakmp_certtype(buf->v[0]));
-	plogdump(LLV_DEBUG, buf->v, buf->l);
+	return new;
+}
 
-	actx->plist = isakmp_plist_append_full(actx->plist, buf, ISAKMP_NPTYPE_CR, 1);
+static cert_t *
+save_certx509(cert)
+	X509 *cert;
+{
+	cert_t *new;
+        int len;
+        u_char *bp;
 
-err:
-	vfree(asn1dn);
-	return 0;
+	new = oakley_newcert();
+	if (!new) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"Failed to get CERT buffer.\n");
+		return NULL;
+	}
+
+        len = i2d_X509(cert, NULL);
+	new->pl = vmalloc(len);
+	if (new->pl == NULL) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"Failed to copy CERT from packet.\n");
+		oakley_delcert(new);
+		new = NULL;
+		return NULL;
+	}
+        bp = (u_char *) new->pl->v;
+        len = i2d_X509(cert, &bp);
+	new->type = ISAKMP_CERT_X509SIGN;
+	new->cert.v = new->pl->v;
+	new->cert.l = new->pl->l;
+
+	return new;
 }
 
 /*
- * Append list of acceptable CRs.
- * RFC2048 3.10
+ * get my CR.
+ * NOTE: No Certificate Authority field is included to CR payload at the
+ * moment. Becuase any certificate authority are accepted without any check.
+ * The section 3.10 in RFC2408 says that this field SHOULD not be included,
+ * if there is no specific certificate authority requested.
  */
-struct payload_list *
-oakley_append_cr(plist, iph1)
-	struct payload_list *plist;
+vchar_t *
+oakley_getcr(iph1)
 	struct ph1handle *iph1;
 {
-	struct append_cr_ctx ctx;
-	struct rmconfselector sel;
+	vchar_t *buf;
 
-	ctx.iph1 = iph1;
-	ctx.plist = plist;
-	if (iph1->rmconf == NULL) {
-		rmconf_selector_from_ph1(&sel, iph1);
-		enumrmconf(&sel, oakley_append_rmconf_cr, &ctx);
-	} else {
-		oakley_append_rmconf_cr(iph1->rmconf, &ctx);
+	buf = vmalloc(1);
+	if (buf == NULL) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"failed to get cr buffer\n");
+		return NULL;
 	}
+	if(iph1->rmconf->certtype == ISAKMP_CERT_NONE) {
+		buf->v[0] = iph1->rmconf->cacerttype;
+		plog(LLV_DEBUG, LOCATION, NULL, "create my CR: NONE, using %s instead\n",
+		s_isakmp_certtype(iph1->rmconf->cacerttype));
+	} else {
+		buf->v[0] = iph1->rmconf->certtype;
+		plog(LLV_DEBUG, LOCATION, NULL, "create my CR: %s\n",
+		s_isakmp_certtype(iph1->rmconf->certtype));
+	}
+	if (buf->l > 1)
+		plogdump(LLV_DEBUG, buf->v, buf->l);
 
-	return ctx.plist;
+	return buf;
 }
 
 /*
@@ -2336,20 +2423,17 @@ int
 oakley_checkcr(iph1)
 	struct ph1handle *iph1;
 {
-	int type;
-
 	if (iph1->cr_p == NULL)
 		return 0;
 
 	plog(LLV_DEBUG, LOCATION, iph1->remote,
 		"peer transmitted CR: %s\n",
-		s_isakmp_certtype(oakley_get_certtype(iph1->cr_p)));
+		s_isakmp_certtype(iph1->cr_p->type));
 
-	type = oakley_get_certtype(iph1->cr_p);
-	if (type != oakley_get_certtype(iph1->rmconf->mycert)) {
+	if (iph1->cr_p->type != iph1->rmconf->certtype) {
 		plog(LLV_ERROR, LOCATION, iph1->remote,
-		     "such a cert type isn't supported: %d\n",
-		     type);
+			"such a cert type isn't supported: %d\n",
+			(char)iph1->cr_p->type);
 		return -1;
 	}
 
@@ -2398,10 +2482,10 @@ oakley_skeyid(iph1)
 	int error = -1;
 	
 	/* SKEYID */
-	switch (iph1->approval->authmethod) {
+	switch (AUTHMETHOD(iph1)) {
 	case OAKLEY_ATTR_AUTH_METHOD_PSKEY:
 #ifdef ENABLE_HYBRID
-	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_I:
+	case FICTIVE_AUTH_METHOD_XAUTH_PSKEY_I:
 	case OAKLEY_ATTR_AUTH_METHOD_XAUTH_PSKEY_R:
 #endif
 		if (iph1->etype != ISAKMP_ETYPE_IDENT) {
@@ -2664,7 +2748,7 @@ oakley_compute_enckey(iph1)
 					iph1->approval->encklen);
 	if (keylen == -1) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid encryption algorithm %d, "
+			"invalid encryption algoritym %d, "
 			"or invalid key length %d.\n",
 			iph1->approval->enctype,
 			iph1->approval->encklen);
@@ -2768,7 +2852,7 @@ oakley_compute_enckey(iph1)
 	if (iph1->approval->enctype > ARRAYLEN(oakley_encdef)
 	 || oakley_encdef[iph1->approval->enctype].weakkey == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"encryption algorithm %d isn't supported.\n",
+			"encryption algoritym %d isn't supported.\n",
 			iph1->approval->enctype);
 		goto end;
 	}
@@ -2786,6 +2870,36 @@ oakley_compute_enckey(iph1)
 
 end:
 	return error;
+}
+
+/* allocated new buffer for CERT */
+cert_t *
+oakley_newcert()
+{
+	cert_t *new;
+
+	new = racoon_calloc(1, sizeof(*new));
+	if (new == NULL) {
+		plog(LLV_ERROR, LOCATION, NULL,
+			"failed to get cert's buffer\n");
+		return NULL;
+	}
+
+	new->pl = NULL;
+
+	return new;
+}
+
+/* delete buffer for CERT */
+void
+oakley_delcert(cert)
+	cert_t *cert;
+{
+	if (!cert)
+		return;
+	if (cert->pl)
+		VPTRINIT(cert->pl);
+	racoon_free(cert);
 }
 
 /*
@@ -2842,7 +2956,7 @@ oakley_newiv(iph1)
 	newivm->iv->l = alg_oakley_encdef_blocklen(iph1->approval->enctype);
 	if (newivm->iv->l == -1) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid encryption algorithm %d.\n",
+			"invalid encryption algoriym %d.\n",
 			iph1->approval->enctype);
 		vfree(buf);
 		oakley_delivm(newivm);
@@ -2924,7 +3038,7 @@ oakley_newiv2(iph1, msgid)
 	newivm->iv->l = alg_oakley_encdef_blocklen(iph1->approval->enctype);
 	if (newivm->iv->l == -1) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid encryption algorithm %d.\n",
+			"invalid encryption algoriym %d.\n",
 			iph1->approval->enctype);
 		goto end;
 	}
@@ -2988,7 +3102,7 @@ oakley_do_decrypt(iph1, msg, ivdp, ivep)
 	blen = alg_oakley_encdef_blocklen(iph1->approval->enctype);
 	if (blen == -1) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid encryption algorithm %d.\n",
+			"invalid encryption algoriym %d.\n",
 			iph1->approval->enctype);
 		goto end;
 	}
@@ -3110,7 +3224,7 @@ oakley_do_encrypt(iph1, msg, ivep, ivp)
 	blen = alg_oakley_encdef_blocklen(iph1->approval->enctype);
 	if (blen == -1) {
 		plog(LLV_ERROR, LOCATION, NULL,
-			"invalid encryption algorithm %d.\n",
+			"invalid encryption algoriym %d.\n",
 			iph1->approval->enctype);
 		goto end;
 	}

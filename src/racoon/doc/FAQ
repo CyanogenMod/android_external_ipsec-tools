@@ -18,7 +18,7 @@ Q: How can I make racoon interoperate with <IKE/IPsec implementation>?
 
 A:
 	Configure both ends exactly the same.  With just a tiny little
-	difference, you will be in trouble.
+	differnce, you will be in trouble.
 
 Q: How to build racoon on my platform?
 
@@ -109,6 +109,6 @@ A:
 Q: Other documents to look at?
 
 A:
-	http://www.NetBSD.org/docs/network/ipsec/
+	http://www.netbsd.org/Documentation/network/ipsec/
 	http://www.kame.net/
 	http://www.kame.net/newsletter/

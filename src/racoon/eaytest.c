@@ -1,4 +1,4 @@
-/*	$NetBSD: eaytest.c,v 1.10 2010/01/17 23:02:48 wiz Exp $	*/
+/*	$NetBSD: eaytest.c,v 1.7.6.2 2008/07/15 00:55:48 mgrooms Exp $	*/
 
 /* Id: eaytest.c,v 1.22 2005/06/19 18:02:54 manubsd Exp */
 
@@ -572,7 +572,6 @@ getcerts(path)
 
 		n++;
 	}
-	closedir(dirp);
 
 	p = (char **)realloc(certs, (n + 1) * sizeof(certs));
 	if (p == NULL)

@@ -22,7 +22,6 @@
 
 #include "config.h"
 #include "gcmalloc.h"
-#include "session.h"
 #include "schedule.h"
 #include "plog.h"
 
@@ -125,14 +124,11 @@ const char *android_hook(char **envp)
 
 extern void setup(int argc, char **argv);
 
-char *pname;
-
-static int monitor_count;
-static struct {
-    int (*callback)(void *ctx, int fd);
-    void *ctx;
-} monitors[10];
+static int monitors;
+static void (*callbacks[10])(int fd);
 static struct pollfd pollfds[10];
+
+char *pname;
 
 static void terminate(int signal)
 {
@@ -144,17 +140,29 @@ static void terminated()
     do_plog(LLV_INFO, "Bye\n");
 }
 
+void monitor_fd(int fd, void (*callback)(int))
+{
+    if (fd < 0 || monitors == 10) {
+        do_plog(LLV_ERROR, "Cannot monitor fd");
+        exit(1);
+    }
+    callbacks[monitors] = callback;
+    pollfds[monitors].fd = fd;
+    pollfds[monitors].events = callback ? POLLIN : 0;
+    ++monitors;
+}
+
 int main(int argc, char **argv)
 {
 #ifdef ANDROID_CHANGES
     int control = android_get_control_and_arguments(&argc, &argv);
     if (control != -1) {
         pname = "%p";
-        monitor_fd(control, NULL, NULL, 0);
+        monitor_fd(control, NULL);
     }
 #endif
 
-    do_plog(LLV_INFO, "ipsec-tools 0.8.0 (http://ipsec-tools.sf.net)\n");
+    do_plog(LLV_INFO, "ipsec-tools 0.7.3 (http://ipsec-tools.sf.net)\n");
 
     signal(SIGHUP, terminate);
     signal(SIGINT, terminate);
@@ -173,40 +181,20 @@ int main(int argc, char **argv)
         struct timeval *tv = schedular();
         int timeout = tv->tv_sec * 1000 + tv->tv_usec / 1000 + 1;
 
-        if (poll(pollfds, monitor_count, timeout) > 0) {
+        if (poll(pollfds, monitors, timeout) > 0) {
             int i;
-            for (i = 0; i < monitor_count; ++i) {
+            for (i = 0; i < monitors; ++i) {
                 if (pollfds[i].revents & POLLHUP) {
                     do_plog(LLV_ERROR, "Connection is closed\n", pollfds[i].fd);
                     exit(1);
                 }
                 if (pollfds[i].revents & POLLIN) {
-                    monitors[i].callback(monitors[i].ctx, pollfds[i].fd);
+                    callbacks[i](pollfds[i].fd);
                 }
             }
         }
     }
     return 0;
-}
-
-/* session.h */
-
-void monitor_fd(int fd, int (*callback)(void *, int), void *ctx, int priority)
-{
-    if (fd < 0 || monitor_count == 10) {
-        do_plog(LLV_ERROR, "Cannot monitor fd");
-        exit(1);
-    }
-    monitors[monitor_count].callback = callback;
-    monitors[monitor_count].ctx = ctx;
-    pollfds[monitor_count].fd = fd;
-    pollfds[monitor_count].events = callback ? POLLIN : 0;
-    ++monitor_count;
-}
-
-void unmonitor_fd(int fd)
-{
-    exit(1);
 }
 
 /* plog.h */

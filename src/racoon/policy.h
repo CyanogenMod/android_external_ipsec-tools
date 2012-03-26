@@ -1,4 +1,4 @@
-/*	$NetBSD: policy.h,v 1.8 2008/12/05 06:02:20 tteras Exp $	*/
+/*	$NetBSD: policy.h,v 1.5.4.2 2007/06/07 20:34:19 manu Exp $	*/
 
 /* Id: policy.h,v 1.5 2004/06/11 16:00:17 ludvigm Exp */
 
@@ -82,12 +82,6 @@ struct secpolicy {
 	struct ipsecrequest *req;
 				/* pointer to the ipsec request tree, */
 				/* if policy == IPSEC else this value == NULL.*/
-
-	/* MIPv6 needs to perform negotiation of SA using different addresses
-	 * than the endpoints of the SA (CoA for the source). In that case,
-	 * MIGRATE msg provides that info (before movement occurs on the MN) */
-	struct sockaddr *local;
-	struct sockaddr *remote;
 };
 
 /* Security Assocciation Index */
@@ -117,7 +111,7 @@ struct ipsecrequest {
 #ifdef HAVE_PFKEY_POLICY_PRIORITY
 #define KEY_SETSECSPIDX(_dir, s, d, ps, pd, ulp, _priority, _created, idx)              \
 do {                                                                         \
-	bzero((idx), sizeof(struct policyindex));                            \
+	memset((idx), 0, sizeof(struct policyindex));                        \
 	(idx)->dir = (_dir);                                                 \
 	(idx)->prefs = (ps);                                                 \
 	(idx)->prefd = (pd);                                                 \
@@ -130,7 +124,7 @@ do {                                                                         \
 #else
 #define KEY_SETSECSPIDX(_dir, s, d, ps, pd, ulp, _created, idx)              \
 do {                                                                         \
-	bzero((idx), sizeof(struct policyindex));                            \
+	memset((idx), 0, sizeof(struct policyindex));                        \
 	(idx)->dir = (_dir);                                                 \
 	(idx)->prefs = (ps);                                                 \
 	(idx)->prefd = (pd);                                                 \

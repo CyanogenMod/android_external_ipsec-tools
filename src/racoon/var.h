@@ -1,4 +1,4 @@
-/*	$NetBSD: var.h,v 1.5 2007/06/06 15:37:15 vanhu Exp $	*/
+/*	$NetBSD: var.h,v 1.4.6.1 2007/06/06 15:36:38 vanhu Exp $	*/
 
 /* Id: var.h,v 1.6 2004/11/20 16:16:59 monas Exp */
 

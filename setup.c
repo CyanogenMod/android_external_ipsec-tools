@@ -58,12 +58,9 @@ static struct localconf localconf;
 static struct sainfo sainfo;
 static char *pre_shared_key;
 
-static char *interface;
 static struct sockaddr *targets[2];
-static struct {
-    struct sockaddr *addr;
-    int fd;
-} sources[2];
+static struct sockaddr *source;
+static struct myaddrs myaddrs[2];
 
 struct localconf *lcconf = &localconf;
 int f_local = 0;
@@ -87,7 +84,7 @@ static void add_sainfo_algorithm(int class, int algorithm, int length)
     }
 }
 
-static void set_globals(char *interfaze, char *server)
+static void set_globals(char *server)
 {
     struct addrinfo hints = {
         .ai_flags = AI_NUMERICSERV,
@@ -110,18 +107,26 @@ static void set_globals(char *interfaze, char *server)
     targets[0] = dupsaddr(info->ai_addr);
     freeaddrinfo(info);
 
-    interface = interfaze;
-    sources[0].addr = getlocaladdr(targets[0]);
-    if (!sources[0].addr) {
+    source = getlocaladdr(targets[0]);
+    if (!source) {
         do_plog(LLV_ERROR, "Cannot get local address\n");
         exit(1);
     }
     set_port(targets[0], 0);
-    set_port(sources[0].addr, 0);
-    sources[0].fd = -1;
-    sources[1].addr = dupsaddr(sources[0].addr);
-    sources[1].fd = -1;
+    set_port(source, 0);
 
+    myaddrs[0].addr = dupsaddr(source);
+    set_port(myaddrs[0].addr, PORT_ISAKMP);
+    myaddrs[0].sock = -1;
+#ifdef ENABLE_NATT
+    myaddrs[0].next = &myaddrs[1];
+    myaddrs[1].addr = dupsaddr(myaddrs[0].addr);
+    set_port(myaddrs[1].addr, PORT_ISAKMP_NATT);
+    myaddrs[1].sock = -1;
+    myaddrs[1].udp_encap = 1;
+#endif
+
+    localconf.myaddrs = &myaddrs[0];
     localconf.port_isakmp = PORT_ISAKMP;
     localconf.port_isakmp_natt = PORT_ISAKMP_NATT;
     localconf.default_af = AF_INET;
@@ -156,8 +161,7 @@ static int policy_match(struct sadb_address *address)
 {
     if (address) {
         struct sockaddr *addr = PFKEY_ADDR_SADDR(address);
-        return cmpsaddr(addr, targets[0]) < CMPSADDR_MISMATCH ||
-                cmpsaddr(addr, targets[1]) < CMPSADDR_MISMATCH;
+        return !cmpsaddrwop(addr, targets[0]) || !cmpsaddrwop(addr, targets[1]);
     }
     return 0;
 }
@@ -303,6 +307,7 @@ static void add_proposal(struct remoteconf *remoteconf,
     p->hashtype = hash;
     p->dh_group = OAKLEY_ATTR_GRP_DESC_MODP1024;
     p->vendorid = VENDORID_UNKNOWN;
+    p->rmconf = remoteconf;
 
     if (!remoteconf->proposal) {
       p->trns_no = 1;
@@ -322,6 +327,7 @@ static vchar_t *strtovchar(char *string)
     vchar_t *vchar = string ? vmalloc(strlen(string) + 1) : NULL;
     if (vchar) {
         memcpy(vchar->v, string, vchar->l);
+        vchar->l -= 1;
     }
     return vchar;
 }
@@ -332,7 +338,6 @@ static void set_pre_shared_key(struct remoteconf *remoteconf,
     pre_shared_key = key;
     if (identifier[0]) {
         remoteconf->idv = strtovchar(identifier);
-        remoteconf->idv->l -= 1;
         remoteconf->etypes->type = ISAKMP_ETYPE_AGG;
 
         remoteconf->idvtype = IDTYPE_KEYID;
@@ -345,20 +350,6 @@ static void set_pre_shared_key(struct remoteconf *remoteconf,
     }
 }
 
-static vchar_t *get_certificate(char *type, char *file)
-{
-    char path[PATH_MAX + 1];
-    vchar_t *certificate = NULL;
-
-    getpathname(path, sizeof(path), LC_PATHTYPE_CERT, file);
-    certificate = eay_get_x509cert(path);
-    if (!certificate) {
-        do_plog(LLV_ERROR, "Cannot load %s certificate\n", type);
-        exit(1);
-    }
-    return certificate;
-}
-
 static void set_certificates(struct remoteconf *remoteconf,
         char *user_private_key, char *user_certificate,
         char *ca_certificate, char *server_certificate)
@@ -367,16 +358,15 @@ static void set_certificates(struct remoteconf *remoteconf,
     remoteconf->mycertfile = user_certificate;
     if (user_certificate) {
         remoteconf->idvtype = IDTYPE_ASN1DN;
-        remoteconf->mycert = get_certificate("user", user_certificate);
     }
     if (!ca_certificate[0]) {
         remoteconf->verify_cert = FALSE;
     } else {
         remoteconf->cacertfile = ca_certificate;
-        remoteconf->cacert = get_certificate("CA", ca_certificate);
     }
     if (server_certificate[0]) {
-        remoteconf->peerscert = get_certificate("server", server_certificate);
+        remoteconf->peerscertfile = server_certificate;
+        remoteconf->getcert_method = ISAKMP_GETCERT_LOCALFILE;
     }
 }
 
@@ -387,7 +377,9 @@ static void set_xauth_and_more(struct remoteconf *remoteconf,
 {
     struct xauth_rmconf *xauth = racoon_calloc(1, sizeof(struct xauth_rmconf));
     xauth->login = strtovchar(username);
+    xauth->login->l += 1;
     xauth->pass = strtovchar(password);
+    xauth->pass->l += 1;
     remoteconf->xauth = xauth;
     remoteconf->mode_cfg = TRUE;
     remoteconf->script[SCRIPT_PHASE1_UP] = strtovchar(phase1_up);
@@ -396,13 +388,24 @@ static void set_xauth_and_more(struct remoteconf *remoteconf,
 
 #endif
 
+extern void monitor_fd(int fd, void (*callback)(int));
+
+void add_isakmp_handler(int fd, const char *interface)
+{
+    if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE,
+            interface, strlen(interface))) {
+        do_plog(LLV_WARNING, "Cannot bind socket to %s\n", interface);
+    }
+    monitor_fd(fd, (void *)isakmp_handler);
+}
+
 void setup(int argc, char **argv)
 {
     struct remoteconf *remoteconf = NULL;
     int auth;
 
     if (argc > 2) {
-        set_globals(argv[1], argv[2]);
+        set_globals(argv[2]);
 
         /* Initialize everything else. */
         eay_init();
@@ -413,7 +416,10 @@ void setup(int argc, char **argv)
         if (pfkey_init() < 0 || isakmp_init() < 0) {
             exit(1);
         }
+        monitor_fd(localconf.sock_pfkey, (void *)pfkey_handler);
+        add_isakmp_handler(myaddrs[0].sock, argv[1]);
 #ifdef ENABLE_NATT
+        add_isakmp_handler(myaddrs[1].sock, argv[1]);
         natt_keepalive_init();
 #endif
 
@@ -424,6 +430,7 @@ void setup(int argc, char **argv)
         remoteconf->idvtype = IDTYPE_ADDRESS;
         remoteconf->ike_frag = TRUE;
         remoteconf->pcheck_level = PROP_CHECK_CLAIM;
+        remoteconf->certtype = ISAKMP_CERT_X509SIGN;
         remoteconf->gen_policy = TRUE;
         remoteconf->nat_traversal = TRUE;
         remoteconf->dh_group = OAKLEY_ATTR_GRP_DESC_MODP1024;
@@ -431,7 +438,6 @@ void setup(int argc, char **argv)
         remoteconf->script[SCRIPT_PHASE1_DOWN] = strtovchar("");
         oakley_setdhgroup(remoteconf->dh_group, &remoteconf->dhgrp);
         remoteconf->remote = dupsaddr(targets[0]);
-        set_port(remoteconf->remote, localconf.port_isakmp);
     }
 
     /* Set authentication method and credentials. */
@@ -440,13 +446,13 @@ void setup(int argc, char **argv)
         auth = OAKLEY_ATTR_AUTH_METHOD_PSKEY;
 
         set_port(targets[0], atoi(argv[6]));
-        spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
+        spdadd(source, targets[0], IPPROTO_UDP, NULL, NULL);
     } else if (argc == 9 && !strcmp(argv[3], "udprsa")) {
         set_certificates(remoteconf, argv[4], argv[5], argv[6], argv[7]);
         auth = OAKLEY_ATTR_AUTH_METHOD_RSASIG;
 
         set_port(targets[0], atoi(argv[8]));
-        spdadd(sources[0].addr, targets[0], IPPROTO_UDP, NULL, NULL);
+        spdadd(source, targets[0], IPPROTO_UDP, NULL, NULL);
 #ifdef ENABLE_HYBRID
     } else if (argc == 10 && !strcmp(argv[3], "xauthpsk")) {
         set_pre_shared_key(remoteconf, argv[4], argv[5]);
@@ -500,24 +506,9 @@ void setup(int argc, char **argv)
     /* Install remote configuration. */
     insrmconf(remoteconf);
 
-    /* Create ISAKMP sockets. */
-    set_port(sources[0].addr, localconf.port_isakmp);
-    sources[0].fd = isakmp_open(sources[0].addr, FALSE);
-    if (sources[0].fd == -1) {
-        do_plog(LLV_ERROR, "Cannot create ISAKMP socket\n");
-        exit(1);
-    }
-#ifdef ENABLE_NATT
-    set_port(sources[1].addr, localconf.port_isakmp_natt);
-    sources[1].fd = isakmp_open(sources[1].addr, TRUE);
-    if (sources[1].fd == -1) {
-        do_plog(LLV_WARNING, "Cannot create ISAKMP socket for NAT-T\n");
-    }
-#endif
-
     /* Start phase 1 negotiation for xauth. */
     if (remoteconf->xauth) {
-        isakmp_ph1begin_i(remoteconf, remoteconf->remote, sources[0].addr);
+        isakmp_ph1begin_i(remoteconf, remoteconf->remote, source);
     }
 }
 
@@ -552,35 +543,29 @@ int myaddr_getsport(struct sockaddr *addr)
     return 0;
 }
 
-int myaddr_getfd(struct sockaddr *addr)
+int getsockmyaddr(struct sockaddr *addr)
 {
 #ifdef ENABLE_NATT
-    if (sources[1].fd != -1 &&
-            cmpsaddr(addr, sources[1].addr) == CMPSADDR_MATCH) {
-        return sources[1].fd;
+    if (!cmpsaddrstrict(addr, myaddrs[1].addr)) {
+        return myaddrs[1].sock;
     }
 #endif
-    if (cmpsaddr(addr, sources[0].addr) < CMPSADDR_MISMATCH) {
-        return sources[0].fd;
+    if (!cmpsaddrwop(addr, myaddrs[0].addr)) {
+        return myaddrs[0].sock;
     }
     return -1;
 }
 
 /* privsep.h */
 
-int privsep_socket(int domain, int type, int protocol)
+int privsep_pfkey_open()
 {
-    int fd = socket(domain, type, protocol);
-    if ((domain == AF_INET || domain == AF_INET6) && setsockopt(
-            fd, SOL_SOCKET, SO_BINDTODEVICE, interface, strlen(interface))) {
-        do_plog(LLV_WARNING, "Cannot bind socket to %s\n", interface);
-    }
-    return fd;
+    return pfkey_open();
 }
 
-int privsep_bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
+void privsep_pfkey_close(int key)
 {
-    return bind(fd, addr, addrlen);
+    pfkey_close(key);
 }
 
 vchar_t *privsep_eay_get_pkcs1privkey(char *file)
@@ -657,15 +642,10 @@ int racoon_hexdump(void *data, size_t length)
     return 0;
 }
 
-void close_on_exec(int fd)
-{
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-}
-
 /* sainfo.h */
 
 struct sainfo *getsainfo(const vchar_t *src, const vchar_t *dst,
-        const vchar_t *peer, const vchar_t *client, uint32_t remoteid)
+        const vchar_t *peer, int remoteid)
 {
     return &sainfo;
 }

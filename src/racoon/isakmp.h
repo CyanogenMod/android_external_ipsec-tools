@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp.h,v 1.7 2009/05/20 07:54:50 vanhu Exp $	*/
+/*	$NetBSD: isakmp.h,v 1.4 2006/09/09 16:22:09 manu Exp $	*/
 
 /* Id: isakmp.h,v 1.11 2005/04/25 22:19:39 manubsd Exp */
 
@@ -36,8 +36,8 @@
 
 /* refer to RFC 2408 */
 
-#include <netinet/in.h>
-#include "isakmp_var.h"
+/* must include <netinet/in.h> first. */
+/* must include "isakmp_var.h" first. */
 
 #define INITIATOR	0	/* synonym sender */
 #define RESPONDER	1	/* synonym receiver */
@@ -133,7 +133,7 @@ struct isakmp {
 /* Exchange Type */
 #define ISAKMP_ETYPE_NONE	0	/* NONE */
 #define ISAKMP_ETYPE_BASE	1	/* Base */
-#define ISAKMP_ETYPE_IDENT	2	/* Identity Protection */
+#define ISAKMP_ETYPE_IDENT	2	/* Identity Proteciton */
 #define ISAKMP_ETYPE_AUTH	3	/* Authentication Only */
 #define ISAKMP_ETYPE_AGG	4	/* Aggressive */
 #define ISAKMP_ETYPE_INFO	5	/* Informational */
@@ -270,6 +270,11 @@ struct isakmp_pl_cert {
 #define ISAKMP_CERT_X509ATTR	10
 #define ISAKMP_CERT_PLAINRSA	11
 
+/* the method to get peers certificate */
+#define ISAKMP_GETCERT_PAYLOAD		1
+#define ISAKMP_GETCERT_LOCALFILE	2
+#define ISAKMP_GETCERT_DNS		3
+
 /* 3.10 Certificate Request Payload */
 struct isakmp_pl_cr {
 	struct isakmp_gen h;
@@ -379,8 +384,7 @@ struct isakmp_pl_d {
 struct payload_list {
 	struct payload_list	*next, *prev;
 	vchar_t			*payload;
-	u_int8_t		payload_type;
-	u_int8_t		free_payload;
+	int			payload_type;
 };
 
 

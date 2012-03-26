@@ -1,4 +1,4 @@
-.\"	$NetBSD: racoon.conf.5,v 1.61 2010/06/22 20:51:04 wiz Exp $
+.\"	$NetBSD: racoon.conf.5,v 1.34.4.3 2007/09/03 18:07:29 mgrooms Exp $
 .\"
 .\"	Id: racoon.conf.5,v 1.54 2006/08/22 18:17:17 manubsd Exp
 .\"
@@ -29,7 +29,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd June 22, 2010
+.Dd September 19, 2006
 .Dt RACOON.CONF 5
 .Os
 .\"
@@ -152,7 +152,7 @@ The user to which the unprivileged instance of
 should switch.
 This can be a quoted user name or a numeric UID.
 .It Ic group Ar group ;
-The group the unprivileged instance of
+The group the unprivilegied instance of
 .Xr racoon 8 ,
 should switch.
 This can be a quoted group name or a numeric GID.
@@ -184,8 +184,7 @@ When running in privilege separation mode,
 .Ic certificate
 and
 .Ic script
-paths are mandatory.
-A
+paths are mandatory. A
 .Xr racoon 8
 restart is required if you want path changes to be taken into account.
 .Bl -tag -width Ds -compact
@@ -224,8 +223,7 @@ will refuse to execute a script stored outside of this directory.
 Specifies file where to store PID of process.
 If path starts with
 .Pa /
-it is treated as an absolute path.
-Otherwise, it is treated as a relative
+it is treated as an absolute path. Otherwise, it is treated as a relative 
 path to the VARRUN directory specified at compilation time.
 Default is
 .Pa racoon.pid .
@@ -236,6 +234,12 @@ Default is
 .It Ic include Ar file
 Specifies other configuration files to be included.
 .El
+.\"
+.Ss Identifier Specification
+is obsolete.
+It must be defined at each
+.Ic remote
+directive.
 .\"
 .Ss Timer Specification
 .Bl -tag -width Ds -compact
@@ -315,14 +319,12 @@ The
 .Ar owner ,
 and
 .Ar group
-values specify the socket path, owner, and group.
-They must be quoted.
+values specify the socket path, owner, and group. They must be quoted.
 The defaults are
 .Pa /var/racoon/racoon.sock ,
 UID 0, and GID 0.
 .Ar mode
-is the access mode in octal.
-The default is 0600.
+is the access mode in octal. The default is 0600.
 .It Ic adminsock disabled ;
 This directive tells racoon to not listen on the admin socket.
 .El
@@ -358,66 +360,22 @@ This is the encoding used by older versions of
 .El
 .El
 .\"
-.Pp
-.Bl -tag -width Ds -compact
-.It Ic pfkey_buffer Ar kBytes
-Specifies the socket send/receive buffer size in kilobytes.
-Numerous kernel PF_KEY implementations have problems with dumping
-SAD/SDP with large amount of entries (this happens when 100s to
-1000s of tunnels are configured).
-.Pp
-The default value of 0 leaves everything at the OS-specific default value.
-If the default buffer size is greater than what is specified here racoon
-will not decrease it.
-.Pp
-This problem is known to be fixed in Linux 2.6.25 and later.
-.El
-.\"
 .Ss Remote Nodes Specifications
 .Bl -tag -width Ds -compact
-.It Ic remote Ar name Bo Ic inherit Ar parent_name Bc Ic { Ar statements Ic }
+.It Xo
+.Ic remote ( Ar address | Ic anonymous )
+.Bq Bq Ar port
+.Bq Ic inherit Ar parent
+.Ic { Ar statements Ic }
+.Xc
 Specifies the IKE phase 1 parameters for each remote node.
-.Pp
-If connection is initiated using racoonctl, a unique match using the
-remote IP must be found or the remote block name has to be given.
-For received acquires (kernel notices traffic requiring a new SA) the
-remote IP and remoteid from matching sainfo block are used to decide
-the remoteblock.
-If no uniquely matching remoteblock is found using
-these criteria, no connection attempt is done.
-.Pp
-When acting as responder, racoon picks the first proposal that has one
-or more acceptable remote configurations.
-When determining if a remote
-specification is matching the following information is checked:
-.Bl -bullet -width Ds -compact
-.It
-The remote IP is checked against
-.Ic remote_address .
-.It
-ISAKMP exchange type is checked against
-.Ic exchange_mode .
-.It
-ISAKMP SA attributes must match a
-.Ic proposal
-block.
-.It
-The remote identity is matched against
-.Ic peers_identifier
-if
-.Ic verify_identifier
-is on.
-.It
-If a certificate request was received, it must match the issuer of
-.Ic "certificate_type x509"
-certificate.
-If certificate request without issuer name was sent, the
-.Ic match_empty_cr
-parameter specifies whether or not remote block matches.
-.El
-.Pp
-Similarly, NAT-T is enabled if any of the initial remote configuration
-candidates allow NAT-T.
+The default port is 500.
+If
+.Ic anonymous
+is specified, the statements will apply to any peer that does not match a
+more specific
+.Ic remote
+directive.
 .Pp
 Sections with
 .Ic inherit Ar parent
@@ -435,9 +393,6 @@ The following are valid statements.
 .Pp
 .Bl -tag -width Ds -compact
 .\"
-.It Ic remote_address Ar address ;
-Defines the IP address of the peer.
-.\"
 .It Ic exchange_mode ( main | aggressive | base ) ;
 Defines the exchange mode for phase 1 when racoon is the initiator.
 It also means the acceptable exchange mode when racoon is the responder.
@@ -453,7 +408,14 @@ You can omit this statement.
 Means to use SIT_IDENTITY_ONLY as specified in RFC 2407.
 You can omit this statement.
 .\"
-.It Ic my_identifier Bo Ar qualifier Bc Ar idtype ... ;
+.It Ic identifier Ar idtype ;
+This statment is obsolete. Instead, use
+.Ic my_identifier .
+.\"
+.It Xo
+.Ic my_identifier Bq Ar qualifier
+.Ar idtype ... ;
+.Xc
 Specifies the identifier sent to the remote host
 and the type to use in the phase 1 negotiation.
 .Ic address, fqdn , user_fqdn , keyid ,
@@ -478,7 +440,10 @@ This is the default type if you do not specify an identifier to use.
 The type is a USER_FQDN (user fully-qualified domain name).
 .It Ic my_identifier Ic fqdn Ar string ;
 The type is a FQDN (fully-qualified domain name).
-.It Ic my_identifier Ic keyid Bo Ic file Bc Ar file ;
+.It Xo
+.Ic my_identifier Ic keyid Bq Ic file
+.Ar file ;
+.Xc
 The type is a KEY_ID, read from the file.
 .It Ic my_identifier Ic keyid Ic tag Ar string ;
 The type is a KEY_ID, specified in the quoted string.
@@ -517,13 +482,6 @@ except that the individual component values of an
 identifier may specified as
 .Ic *
 to match any value (e.g. "C=XX, O=MyOrg, OU=*, CN=Mine").
-The format of the
-specification should correspond to RFC 2253; in particular, commas and certain
-other characters -
-.Ic ,=+\*[Lt]\*[Gt]#;
-- may be included in a name by preceeding them with a backslash "\e", and
-arbitrary characters may be inserted in a name with the "\enn" escape, where
-nn is the hex representation of the ascii value of the desired character.
 Alternative acceptable peer identifiers may be specified by repeating the
 .Ic peers_identifier
 statement.
@@ -551,9 +509,7 @@ means a file name of a secret key.
 .Bl -tag -width Ds -compact
 .It Ic plain_rsa Ar privkeyfile ;
 .Ar privkeyfile
-means a file name of a private key generated by
-.Xr plainrsa-gen 8 .
-Required
+means a file name of a private key generated by plainrsa-gen(8).  Required
 for RSA authentication.
 .El
 .It Ic ca_type Ar cacertspec ;
@@ -597,20 +553,16 @@ is defined,
 .Xr racoon 8
 will expect
 .Ar pubkeyfile
-to be the peer's public key that was generated by
-.Xr plainrsa-gen 8 .
+to be the peer's public key that was generated
+by plainrsa-gen(8).
 .\"
 .It Ic script Ar script Ic phase1_up
 .It Ic script Ar script Ic phase1_down
-.It Ic script Ar script Ic phase1_dead
-Shell scripts that get executed when a phase 1 SA goes up or down, or
-when it is detected as dead by DPD.
-All scripts get either
+Shell scripts that get executed when a phase 1 SA goes up or down.
+Both scripts get either
 .Ic phase1_up
-,
-.Ic phase1_down
 or
-.Ic phase1_dead
+.Ic phase1_down
 as first argument, and the following
 variables are set in their environment:
 .Bl -tag -width Ds -compact
@@ -622,8 +574,6 @@ The local port used for IKE for the phase 1 SA.
 The remote address of the phase 1 SA.
 .It Ev REMOTE_PORT
 The remote port used for IKE for the phase 1 SA.
-.It Ev REMOTE_ID
-The remote identity received in IKE for the phase 1 SA.
 .El
 The following variables are only set if
 .Ic mode_cfg
@@ -654,10 +604,6 @@ SPLIT_INCLUDE and SPLIT_LOCAL are mutually exclusive.
 The space separated list of IPv4 addresses and masks (address slash mask)
 that define the networks to be considered local, and thus excluded from the
 tunnels ; obtained by ISAKMP mode config.
-.It SPLIT_INCLUDE_CIDR
-Same as SPLIT_INCLUDE, with netmasks in CIDR notation.
-.It SPLIT_LOCAL_CIDR
-Same as SPLIT_LOCAL, with netmasks in CIDR notation.
 .It DEFAULT_DOMAIN
 The DNS default domain name obtained by ISAKMP mode config.
 .El
@@ -671,21 +617,16 @@ The default is on.
 If you do not want to send a certificate request, set this to off.
 The default is on.
 .\"
-.It Ic match_empty_cr (on | off) ;
-Specifies whether this remote block is a valid match when a non-specific
-certificate request is received.
-The default is on.
-.\"
 .It Ic verify_cert (on | off) ;
 By default, the identifier sent by the remote host (as specified in its
 .Ic my_identifier
 statement) is compared with the credentials in the certificate
 used to authenticate the remote host as follows:
 .Bl -tag -width Ds -compact
-.It Type Ic asn1dn :
+.It Type Ic asn1dn:
 The entire certificate subject name is compared with the identifier,
 e.g. "C=XX, O=YY, ...".
-.It Type Ic address, fqdn, or user_fqdn :
+.It Type Ic address, fqdn, or user_fqdn:
 The certificate's subjectAltName is compared with the identifier.
 .El
 If the two do not match the negotiation will fail.
@@ -751,7 +692,7 @@ The default value is
 It is useful for a server.
 .\"
 .It Ic proposal_check Ar level ;
-Specifies the action of lifetime length, key length, and PFS of the phase 2
+Specifies the action of lifetime length, key length and PFS of the phase 2
 selection on the responder side, and the action of lifetime check in
 phase 1.
 The default level is
@@ -871,22 +812,6 @@ is set, this sets the maximum number of liveliness proofs to request
 The default value is
 .Ic 5 .
 .\"
-.It Ic rekey (on | off | force) ;
-Enable automatic renegotiation of expired phase1 when there are non-dying
-phase2 SAs.
-Possible values are:
-.Bl -tag -width Ds -compact
-.It Ic force
-Rekeying is done unconditionally.
-.It Ic on
-Rekeying is done only if DPD monitoring is active.
-This is the default.
-.It Ic off
-No automatic rekeying.
-Do note that turning off automatic rekeying will
-result in inaccurate DPD monitoring.
-.El
-.\"
 .It Ic nonce_size Ar number ;
 define the byte size of nonce value.
 Racoon can send any value although
@@ -894,11 +819,13 @@ RFC2409 specifies that the value MUST be between 8 and 256 bytes.
 The default size is 16 bytes.
 .\"
 .It Ic ph1id Ar number ;
-An optional number to identify the remote proposal and to link it
+An optionnal number to identify the remote proposal and to link it
 only with sainfos who have the same number.
 Defaults to 0.
 .\"
-.It Ic proposal { Ar sub-substatements Ic }
+.It Xo
+.Ic proposal { Ar sub-substatements Ic }
+.Xc
 .Bl -tag -width Ds -compact
 .\"
 .It Ic encryption_algorithm Ar algorithm ;
@@ -961,35 +888,30 @@ is used, where hostname is the value returned by the
 command.
 .El
 .El
-.Pp
-.It Ic remote Po Ar address | Ic anonymous Pc Bo Bo Ar port Bc Bc \
-Bo Ic inherit Ar parent Bc Ic { Ar statements Ic }
-Deprecated format of specifying a remote block.
-This will be removed in future.
-It is a remnant from time when remote block was decided
-solely based on the peers IP address.
-.Pp
-This is equivalent to:
-.Bd -literal -offset
-remote "address" [inherit "parent-address"] {
-	remote_address address;
-}
-.Ed
 .El
+.\"
+.Ss Policy Specifications
+The policy directive is obsolete, policies are now in the SPD.
+.Xr racoon 8
+will obey the policy configured into the kernel by
+.Xr setkey 8 ,
+and will construct phase 2 proposals by combining
+.Ic sainfo
+specifications in
+.Nm ,
+and policies in the kernel.
 .\"
 .Ss Sainfo Specifications
 .Bl -tag -width Ds -compact
-.It Ic sainfo Po Ar local_id | Ic anonymous Pc \
-Po Ar remote_id | Ic clientaddr | Ic anonymous Pc \
-Bo Ic from Ar idtype Bo Ar string Bc Bc Bo Ic group Ar string Bc \
-Ic { Ar statements Ic }
-Defines the parameters of the IKE phase 2 (IPsec-SA establishment).
-.Pp
-The
-.Ar local_id
+.It Xo
+.Ic sainfo ( Ar source_id destination_id | Ar source_id Ic anonymous | Ic anonymous Ar destination_id | Ic anonymous ) [ from Ar idtype [ Ar string ] ] [ Ic group Ar string ]
+.Ic { Ar statements Ic }
+.Xc
+defines the parameters of the IKE phase 2 (IPsec-SA establishment).
+.Ar source_id
 and
-.Ar remote_id
-strings are constructed like:
+.Ar destination_id
+are constructed like:
 .Pp
 .Ic address Ar address
 .Bq Ic / Ar prefix
@@ -1003,11 +925,17 @@ or
 .Bq Ic [ Ar port ]
 .Ar ul_proto
 .Pp
-An id string should be expressed to match the exact value of an ID payload.
+or
+.Pp
+.Ar idtype Ar string
+.Pp
+An id string should be expressed to match the exact value of an ID payload
+(source is the local end, destination is the remote end).
 This is not like a filter rule.
 For example, if you define 3ffe:501:4819::/48 as
-.Ar local_id .
+.Ar source_id .
 3ffe:501:4819:1000:/64 will not match.
+.Pp
 In the case of a longest prefix (selecting a single host),
 .Ar address
 instructs to send ID type of ADDRESS while
@@ -1015,24 +943,7 @@ instructs to send ID type of ADDRESS while
 instructs to send ID type of SUBNET.
 Otherwise, these instructions are identical.
 .Pp
-The
-.Ic anonymous
-keyword can be used to match any id.
-The
-.Ic clientaddr
-keyword can be used to match a remote id that is equal to either the peer
-ip address or the mode_cfg ip address (if assigned).
-This can be useful
-to restrict policy generation when racoon is acting as a client gateway
-for peers with dynamic ip addresses.
-.Pp
-The
-.Ic from
-keyword allows an sainfo to only match for peers that use a specific phase1
-id value during authentication.
-The
-.Ic group
-keyword allows an XAuth group membership check to be performed
+The group keyword allows an XAuth group membership check to be performed
 for this sainfo section.
 When the mode_cfg auth source is set to
 .Ic system
@@ -1066,6 +977,10 @@ directive.
 Sainfos will only be used if their remoteid matches the ph1id of the
 remote section used for phase 1.
 Defaults to 0, which is also the default for ph1id.
+.\"
+.It Ic my_identifier Ar idtype ... ;
+is obsolete.
+It does not make sense to specify an identifier in the phase 2.
 .El
 .\"
 .Pp
@@ -1122,7 +1037,7 @@ Defines the logging level.
 .Ar level
 is one of following:
 .Ic error , warning , notify , info , debug
-or
+and
 .Ic debug2 .
 The default is
 .Ic info .
@@ -1176,10 +1091,8 @@ This is the default.
 means to use a RADIUS server.
 It works only if
 .Xr racoon 8
-was built with libradius support.
-Radius configuration is handled by statements in the
-.Ic radiuscfg
-section.
+was built with libradius support. Radius configuration is hanlded by
+.Xr radius.conf 5 .
 .Ar pam
 means to use PAM.
 It works only if
@@ -1189,8 +1102,8 @@ was built with libpam support.
 means to use LDAP.
 It works only if
 .Xr racoon 8
-was built with libldap support.
-LDAP configuration is handled by statements in the
+was built with libldap support. LDAP configuration is handled by
+statements in the
 .Ic ldapcfg
 section.
 .It Ic auth_groups Ar "group1", ... ;
@@ -1198,7 +1111,7 @@ Specifies the group memberships for Xauth in quoted group name strings.
 When defined, the authenticating user must be a member of at least one
 group for Xauth to succeed.
 .It Ic group_source (system | ldap) ;
-Specifies the source for group validation of users through Xauth.
+Specifies the source for group validataion of users through Xauth.
 .Ar system
 means to use the Unix user database.
 This is the default.
@@ -1224,10 +1137,9 @@ This is the default.
 means to use a RADIUS server.
 It works only if
 .Xr racoon 8
-was built with libradius support and requires RADIUS authentication.
-RADIUS configuration is handled by statements in the
-.Ic radiuscfg
-section.
+was built with libradius support and requires RADIUS authentiation.
+RADIUS configuration is handled by
+.Xr radius.conf 5 .
 .Ar ldap
 means to use an LDAP server.
 It works only if
@@ -1252,9 +1164,8 @@ enables RADIUS accounting.
 It works only if
 .Xr racoon 8
 was built with libradius support and requires RADIUS authentication.
-RADIUS configuration is handled by statements in the
-.Ic radiuscfg
-section.
+RADIUS configuration is handled by
+.Xr radius.conf 5 .
 Specifying
 .Ar pam
 enables PAM accounting.
@@ -1287,13 +1198,12 @@ A list of IPv4 addresses for DNS servers, separated by commas, or on multiple
 .Ic dns4
 lines.
 .It Ic wins4 Ar addresses ;
-A list of IPv4 address for WINS servers.
-The keyword
+A list of IPv4 address for WINS servers. The keyword
 .It nbns4
 can also be used as an alias for
 .It wins4 .
 .It Ic split_network (include | local_lan) Ar network/mask, ...
-The network configuration to send, in CIDR notation (e.g. 192.168.1.0/24).
+The network configuration to send, in cidr notation (e.g. 192.168.1.0/24).
 If
 .Ic include
 is specified, the tunnel should be only used to encrypt the indicated
@@ -1345,11 +1255,11 @@ The default is
 The host name or ip address of the ldap server.
 The default is
 .Ic localhost .
-.It Ic port Ar number ;
+.It Ic port Ar number;
 The port that the ldap server is configured to listen on.
 The default is
 .Ic 389 .
-.It Ic base Ar distinguished name ;
+.It Ic base Ar distinguished name;
 The ldap search base.
 This option has no default value.
 .It Ic subtree (on | off) ;
@@ -1357,20 +1267,20 @@ Use the subtree ldap search scope.
 Otherwise, use the one level search scope.
 The default is
 .Ic off .
-.It Ic bind_dn Ar distinguished name ;
-The user dn used to optionally bind as before performing ldap search operations.
+.It Ic bind_dn Ar distinguised name;
+The user dn used to optionaly bind as before performing ldap search operations.
 If this option is not specified, anonymous binds are used.
-.It Ic bind_pw Ar string ;
+.It Ic bind_pw Ar string;
 The password used when binding as
 .Ic bind_dn .
-.It Ic attr_user Ar attribute name ;
+.It Ic attr_user Ar attribute name;
 The attribute used to specify a users name in an ldap directory.
 For example,
 if a user dn is "cn=jdoe,dc=my,dc=net" then the attribute would be "cn".
 The default value is
 .Ic cn .
-.It Ic attr_addr Ar attribute name ;
-.It Ic attr_mask Ar attribute name ;
+.It Ic attr_addr Ar attribute name;
+.It Ic attr_mask Ar attribute name;
 The attributes used to specify a users network address and subnet mask in an
 ldap directory.
 These values are forwarded during mode_cfg negotiation when
@@ -1379,52 +1289,16 @@ The default values are
 .Ic racoon-address
 and
 .Ic racoon-netmask .
-.It Ic attr_group Ar attribute name ;
+.It Ic attr_group Ar attribute name;
 The attribute used to specify a group name in an ldap directory.
 For example,
 if a group dn is "cn=users,dc=my,dc=net" then the attribute would be "cn".
 The default value is
 .Ic cn .
-.It Ic attr_member Ar attribute name ;
+.It Ic attr_member Ar attribute name;
 The attribute used to specify group membership in an ldap directory.
 The default value is
 .Ic member .
-.El
-.El
-.Ss Radius configuration settings
-.Bl -tag -width Ds -compact
-.It Ic radiuscfg { Ar statements Ic }
-Defines the parameters that will be used to communicate with radius
-servers for
-.Ic xauth
-authentication.
-If radius is selected as the xauth authentication or accounting
-source and no servers are defined in this section, settings from
-the system
-.Xr radius.conf 5
-configuration file will be used instead.
-.Pp
-The following are valid statements:
-.Bl -tag -width Ds -compact
-.It Ic auth Ar (hostname | address) [port] sharedsecret ;
-The host name or ip address, optional port value and shared secret value
-of a radius authentication server.
-Up to 5 radius authentication servers
-may be specified using multiple lines.
-.It Ic acct Ar (hostname | address) [port] sharedsecret ;
-The host name or ip address, optional port value and shared secret value
-of a radius accounting server.
-Up to 5 radius accounting servers may be
-specified using multiple lines.
-.It Ic timeout Ar seconds ;
-The timeout for receiving replies from radius servers.
-The default is
-.Ic 3 .
-.It Ic retries Ar count ;
-The maximum number of repeated requests to make before giving up
-on a radius server.
-The default is
-.Ic 3 .
 .El
 .El
 .Ss Special directives

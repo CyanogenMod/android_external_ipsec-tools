@@ -1,4 +1,4 @@
-/*	$NetBSD: throttle.c,v 1.7 2011/03/14 17:18:13 tteras Exp $	*/
+/*	$NetBSD: throttle.c,v 1.4 2006/09/09 16:22:10 manu Exp $	*/
 
 /* Id: throttle.c,v 1.5 2006/04/05 20:54:50 manubsd Exp */
 
@@ -33,10 +33,23 @@
 
 #include "config.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if TIME_WITH_SYS_TIME
+# include <sys/time.h>
+# include <time.h> 
+#else 
+# if HAVE_SYS_TIME_H
+#  include <sys/time.h>
+# else
+#  include <time.h>
+# endif 
+#endif
 #include <sys/param.h>
 #include <sys/queue.h>
+#include <sys/socket.h>
+
 #include <netinet/in.h>
 #include <resolv.h>
 
@@ -45,21 +58,21 @@
 #include "plog.h"
 #include "throttle.h"
 #include "sockmisc.h"
+#include "libpfkey.h"
 #include "isakmp_var.h"
 #include "isakmp.h"
 #include "isakmp_xauth.h"
 #include "isakmp_cfg.h"
 #include "gcmalloc.h"
 
-static struct throttle_list throttle_list =
-	TAILQ_HEAD_INITIALIZER(throttle_list);
+struct throttle_list throttle_list = TAILQ_HEAD_INITIALIZER(throttle_list);
+
 
 struct throttle_entry *
 throttle_add(addr)
 	struct sockaddr *addr;
 {
 	struct throttle_entry *te;
-	struct timeval now, penalty;
 	size_t len;
 
 	len = sizeof(*te) 
@@ -69,11 +82,7 @@ throttle_add(addr)
 	if ((te = racoon_malloc(len)) == NULL)
 		return NULL;
 
-	sched_get_monotonic_time(&now);
-	penalty.tv_sec = isakmp_cfg_config.auth_throttle;
-	penalty.tv_usec = 0;
-	timeradd(&now, &penalty, &te->penalty_ends);
-
+	te->penalty = time(NULL) + isakmp_cfg_config.auth_throttle;
 	memcpy(&te->host, addr, sysdep_sa_len(addr));
 	TAILQ_INSERT_HEAD(&throttle_list, te, next);
 
@@ -86,25 +95,26 @@ throttle_host(addr, authfail)
 	int authfail;
 {
 	struct throttle_entry *te;
-	struct timeval now, res;
 	int found = 0;
+	time_t now;
 
 	if (isakmp_cfg_config.auth_throttle == 0)
 		return 0;
 
-	sched_get_monotonic_time(&now);
+	now = time(NULL);
+
 restart:
 	RACOON_TAILQ_FOREACH_REVERSE(te, &throttle_list, throttle_list, next) {
-		/*
-		 * Remove outdated entries
-		 */
-		if (timercmp(&te->penalty_ends, &now, <)) {
+	  /*
+	   * Remove outdated entries 
+	   */
+		if (te->penalty < now) {
 			TAILQ_REMOVE(&throttle_list, te, next);
 			racoon_free(te);
 			goto restart;
 		}
-
-		if (cmpsaddr(addr, (struct sockaddr *) &te->host) <= CMPSADDR_WOP_MATCH) {
+			
+		if (cmpsaddrwop(addr, (struct sockaddr *)&te->host) == 0) {
 			found = 1;
 			break;
 		}
@@ -120,7 +130,8 @@ restart:
 			if ((te = throttle_add(addr)) == NULL) {
 				plog(LLV_ERROR, LOCATION, NULL, 
 				    "Throttle insertion failed\n");
-				return isakmp_cfg_config.auth_throttle;
+				return (time(NULL) 
+				    + isakmp_cfg_config.auth_throttle);
 			}
 		}
 		return 0;
@@ -129,21 +140,19 @@ restart:
 		 * We had a match and auth failed, increase penalty.
 		 */
 		if (authfail) {
-			struct timeval remaining, penalty;
+			time_t remaining;
+			time_t new;
 
-			timersub(&te->penalty_ends, &now, &remaining);
-			penalty.tv_sec = isakmp_cfg_config.auth_throttle;
-			penalty.tv_usec = 0;
-			timeradd(&penalty, &remaining, &res);
-			if (res.tv_sec >= THROTTLE_PENALTY_MAX) {
-				res.tv_sec = THROTTLE_PENALTY_MAX;
-				res.tv_usec = 0;
-			}
-			timeradd(&now, &res, &te->penalty_ends);
+			remaining = te->penalty - now;
+			new = remaining + isakmp_cfg_config.auth_throttle;
+
+			if (new > THROTTLE_PENALTY_MAX)
+				new = THROTTLE_PENALTY_MAX;
+
+			te->penalty = now + new;
 		}
 	}
-
-	timersub(&te->penalty_ends, &now, &res);
-	return res.tv_sec;
+	
+	return te->penalty;
 }
 

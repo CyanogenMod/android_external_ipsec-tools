@@ -1,4 +1,4 @@
-/*	$NetBSD: backupsa.c,v 1.10 2010/04/02 15:15:00 christos Exp $	*/
+/*	$NetBSD: backupsa.c,v 1.8.4.1 2007/08/01 11:52:19 vanhu Exp $	*/
 
 /*	$KAME: backupsa.c,v 1.16 2001/12/31 20:13:40 thorpej Exp $	*/
 
@@ -452,7 +452,7 @@ main()
 	struct tm tm;
 	time_t t;
 	char *buf = "Nov 24 18:22:48 1986 ";
-	const char *p;
+	char *p;
 
 	memset(&tm, 0, sizeof(tm));
 	p = str2tmx(buf, &tm);
@@ -460,8 +460,7 @@ main()
 	t = mktime(&tm);
 	if (t == -1)
 		printf("mktime failed.");
-	if ((p = ctime(&t)) == NULL)
-		p = "?";
+	p = ctime(&t);
 	printf("[%s]\n", p);
 
 	exit(0);

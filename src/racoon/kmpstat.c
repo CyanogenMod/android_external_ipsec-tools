@@ -1,4 +1,4 @@
-/*	$NetBSD: kmpstat.c,v 1.7 2010/11/12 09:08:26 tteras Exp $	*/
+/*	$NetBSD: kmpstat.c,v 1.4.6.2 2007/11/06 16:41:33 vanhu Exp $	*/
 
 /*	$KAME: kmpstat.c,v 1.33 2004/08/16 08:20:28 itojun Exp $	*/
 
@@ -138,7 +138,7 @@ com_recv(combufp)
 {
 	struct admin_com h, *com;
 	caddr_t buf;
-	int len, rlen;
+	int len;
 	int l = 0;
 	caddr_t p;
 
@@ -153,25 +153,19 @@ com_recv(combufp)
 	if (len < sizeof(h))
 		goto bad1;
 
-	if (h.ac_errno && !(h.ac_cmd & ADMIN_FLAG_LONG_REPLY)) {
+	if (h.ac_errno) {
 		errno = h.ac_errno;
 		goto bad1;
 	}
 
-	/* real length */
-	if (h.ac_cmd & ADMIN_FLAG_LONG_REPLY)
-		rlen = ((u_int32_t)h.ac_len) + (((u_int32_t)h.ac_len_high) << 16);
-	else
-		rlen = h.ac_len;
-
 	/* allocate buffer */
-	if ((*combufp = vmalloc(rlen)) == NULL)
+	if ((*combufp = vmalloc(h.ac_len)) == NULL)
 		goto bad1;
 
 	/* read real message */
 	p = (*combufp)->v;
-	while (l < rlen) {
-		if ((len = recv(so, p, rlen - l, 0)) < 0) {
+	while (l < len) {
+		if ((len = recv(so, p, h.ac_len, 0)) < 0) {
 			perror("recv");
 			goto bad2;
 		}

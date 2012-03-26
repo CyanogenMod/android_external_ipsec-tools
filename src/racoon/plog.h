@@ -1,4 +1,4 @@
-/*	$NetBSD: plog.h,v 1.5 2007/10/02 09:47:40 vanhu Exp $	*/
+/*	$NetBSD: plog.h,v 1.4.6.1 2007/11/06 16:41:27 vanhu Exp $	*/
 
 /* Id: plog.h,v 1.7 2006/06/20 09:57:31 vanhu Exp */
 
@@ -43,7 +43,7 @@
 #define LLV_DEBUG   4
 #define LLV_DEBUG2  5
 
-#define loglevel LLV_INFO
+#define loglevel LLV_DEBUG2
 
 #define plog(level, location, address, ...)                 \
     do {                                                    \
