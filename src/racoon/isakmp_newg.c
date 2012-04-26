@@ -120,7 +120,7 @@ isakmp_newgroup_r(iph1, msg)
 			sa = (struct isakmp_pl_sa *)pa->ptr;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		default:
 			isakmp_info_send_n1(iph1, ISAKMP_NTYPE_INVALID_PAYLOAD_TYPE, NULL);

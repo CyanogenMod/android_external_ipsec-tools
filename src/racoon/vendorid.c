@@ -53,6 +53,15 @@
 #include "isakmp.h"
 #include "vendorid.h"
 #include "crypto_openssl.h"
+#include "handler.h"
+#include "remoteconf.h"
+#ifdef ENABLE_NATT
+#include "nattraversal.h"
+#endif
+#ifdef ENABLE_HYBRID
+#include "isakmp_xauth.h"
+#include "isakmp_cfg.h"
+#endif
 
 static struct vendor_id all_vendor_ids[] = {
 { VENDORID_IPSEC_TOOLS, "IPSec-Tools" },
@@ -236,6 +245,42 @@ unknown:
 	plog(LLV_DEBUG, LOCATION, NULL, "received unknown Vendor ID\n");
 	plogdump(LLV_DEBUG, (char *)(gen + 1), vidlen);
 	return (VENDORID_UNKNOWN);
+}
+
+int
+handle_vendorid(struct ph1handle *iph1, struct isakmp_gen *gen)
+{
+	int vid_numeric;
+
+	vid_numeric = check_vendorid(gen);
+	if (vid_numeric == VENDORID_UNKNOWN)
+		return vid_numeric;
+
+#ifdef ENABLE_NATT
+	if (natt_vendorid(vid_numeric))
+		natt_handle_vendorid(iph1, vid_numeric);
+#endif
+#ifdef ENABLE_HYBRID
+	switch (vid_numeric) {
+	case VENDORID_XAUTH:
+		iph1->mode_cfg->flags |= ISAKMP_CFG_VENDORID_XAUTH;
+		break;
+	case VENDORID_UNITY:
+		iph1->mode_cfg->flags |= ISAKMP_CFG_VENDORID_UNITY;
+		break;
+	default:
+		break;
+	}
+#endif
+#ifdef ENABLE_DPD
+	if (vid_numeric == VENDORID_DPD &&
+	    (iph1->rmconf == NULL || iph1->rmconf->dpd)) {
+		iph1->dpd_support = 1;
+		plog(LLV_DEBUG, LOCATION, NULL, "remote supports DPD\n");
+	}
+#endif
+
+	return vid_numeric;
 }
 
 static vchar_t * 

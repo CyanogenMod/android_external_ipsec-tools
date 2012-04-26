@@ -98,7 +98,7 @@ struct vendor_id {
 };
 
 vchar_t *set_vendorid __P((int));
-int check_vendorid __P((struct isakmp_gen *));
+int handle_vendorid __P((struct ph1handle *, struct isakmp_gen *));
 
 void compute_vendorids __P((void));
 const char *vid_string_by_id __P((int id));

@@ -425,34 +425,7 @@ agg_i2recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal && 
-			    natt_vendorid(vid_numeric))
-				natt_handle_vendorid(iph1, vid_numeric);
-#endif
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |= 
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |= 
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-			default:
-				break;
-			}
-#endif
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd) {
-				iph1->dpd_support=1;
-				plog(LLV_DEBUG, LOCATION, NULL,
-					 "remote supports DPD\n");
-			}
-#endif
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_N:
 			isakmp_check_notify(pa->ptr, iph1);
@@ -860,37 +833,7 @@ agg_r1recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal &&
-			    natt_vendorid(vid_numeric)) {
-				natt_handle_vendorid(iph1, vid_numeric);
-				break;
-			}
-#endif
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |= 
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |= 
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-			default:
-				break;
-			}
-#endif
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd) {
-				iph1->dpd_support=1;
-				plog(LLV_DEBUG, LOCATION, NULL,
-					 "remote supports DPD\n");
-			}
-#endif
+			vid_numeric = handle_vendorid(iph1, pa->ptr);
 #ifdef ENABLE_FRAG
 			if ((vid_numeric == VENDORID_FRAG) &&
 			    (vendorid_frag_cap(pa->ptr) & VENDORID_FRAG_AGG))
@@ -1418,7 +1361,7 @@ agg_r2recv(iph1, msg0)
 			iph1->pl_hash = (struct isakmp_pl_hash *)pa->ptr;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_CERT:
 			if (oakley_savecert(iph1, pa->ptr) < 0)

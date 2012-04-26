@@ -299,31 +299,7 @@ ident_i2recv(iph1, msg)
 
 		switch (pa->type) {
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal && natt_vendorid(vid_numeric))
-			  natt_handle_vendorid(iph1, vid_numeric);
-#endif
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-	
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-	
-			default:
-				break;
-			}
-#endif  
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd)
-				iph1->dpd_support=1;
-#endif
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		default:
 			/* don't send information, see ident_r1recv() */
@@ -485,7 +461,7 @@ ident_i3recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_CR:
 			if (oakley_savecr(iph1, pa->ptr) < 0)
@@ -754,7 +730,7 @@ ident_i4recv(iph1, msg0)
 			break;
 #endif
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_N:
 			isakmp_check_notify(pa->ptr, iph1);
@@ -921,36 +897,12 @@ ident_r1recv(iph1, msg)
 
 		switch (pa->type) {
 		case ISAKMP_NPTYPE_VID:
-			vid_numeric = check_vendorid(pa->ptr);
-#ifdef ENABLE_NATT
-			if (iph1->rmconf->nat_traversal && natt_vendorid(vid_numeric))
-				natt_handle_vendorid(iph1, vid_numeric);
-#endif
+			vid_numeric = handle_vendorid(iph1, pa->ptr);
 #ifdef ENABLE_FRAG
 			if ((vid_numeric == VENDORID_FRAG) &&
 			    (vendorid_frag_cap(pa->ptr) & VENDORID_FRAG_IDENT))
 				iph1->frag = 1;
 #endif   
-#ifdef ENABLE_HYBRID
-			switch (vid_numeric) {
-			case VENDORID_XAUTH:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_XAUTH;
-				break;
-		
-			case VENDORID_UNITY:
-				iph1->mode_cfg->flags |=
-				    ISAKMP_CFG_VENDORID_UNITY;
-				break;
-	
-			default:  
-				break;
-			}
-#endif
-#ifdef ENABLE_DPD
-			if (vid_numeric == VENDORID_DPD && iph1->rmconf->dpd)
-				iph1->dpd_support=1;
-#endif
 			break;
 		default:
 			/*
@@ -1203,7 +1155,7 @@ ident_r2recv(iph1, msg)
 				goto end;
 			break;
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_CR:
 			plog(LLV_WARNING, LOCATION, iph1->remote,
@@ -1453,7 +1405,7 @@ ident_r3recv(iph1, msg0)
 			break;
 #endif
 		case ISAKMP_NPTYPE_VID:
-			(void)check_vendorid(pa->ptr);
+			handle_vendorid(iph1, pa->ptr);
 			break;
 		case ISAKMP_NPTYPE_N:
 			isakmp_check_notify(pa->ptr, iph1);
