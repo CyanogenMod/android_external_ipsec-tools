@@ -1871,6 +1871,7 @@ isakmp_cfg_setenv(iph1, envp, envc)
 	char addrstr[IP_MAX];
 	char addrlist[IP_MAX * MAXNS + MAXNS];
 	char *splitlist = addrlist;
+	char *splitlist_cidr;
 	char defdom[MAXPATHLEN + 1];
 	int cidr, tmp;
 	char cidrstr[4];
@@ -2011,10 +2012,14 @@ isakmp_cfg_setenv(iph1, envp, envc)
 	}
 
 	/* Split networks */
-	if (iph1->mode_cfg->flags & ISAKMP_CFG_GOT_SPLIT_INCLUDE)
-		splitlist = splitnet_list_2str(iph1->mode_cfg->split_include);
-	else {
+	if (iph1->mode_cfg->flags & ISAKMP_CFG_GOT_SPLIT_INCLUDE) {
+		splitlist =
+		    splitnet_list_2str(iph1->mode_cfg->split_include, NETMASK);
+		splitlist_cidr =
+		    splitnet_list_2str(iph1->mode_cfg->split_include, CIDR);
+	} else {
 		splitlist = addrlist;
+		splitlist_cidr = addrlist;
 		addrlist[0] = '\0';
 	}
 
@@ -2022,13 +2027,25 @@ isakmp_cfg_setenv(iph1, envp, envc)
 		plog(LLV_ERROR, LOCATION, NULL, "Cannot set SPLIT_INCLUDE\n");
 		return -1;
 	}
+	if (script_env_append(envp, envc,
+	    "SPLIT_INCLUDE_CIDR", splitlist_cidr) != 0) {
+		plog(LLV_ERROR, LOCATION, NULL,
+		     "Cannot set SPLIT_INCLUDE_CIDR\n");
+		return -1;
+	}
 	if (splitlist != addrlist)
 		racoon_free(splitlist);
+	if (splitlist_cidr != addrlist)
+		racoon_free(splitlist_cidr);
 
-	if (iph1->mode_cfg->flags & ISAKMP_CFG_GOT_SPLIT_LOCAL)
-		splitlist = splitnet_list_2str(iph1->mode_cfg->split_local);
-	else {
+	if (iph1->mode_cfg->flags & ISAKMP_CFG_GOT_SPLIT_LOCAL) {
+		splitlist =
+		    splitnet_list_2str(iph1->mode_cfg->split_local, NETMASK);
+		splitlist_cidr =
+		    splitnet_list_2str(iph1->mode_cfg->split_local, CIDR);
+	} else {
 		splitlist = addrlist;
+		splitlist_cidr = addrlist;
 		addrlist[0] = '\0';
 	}
 
@@ -2036,9 +2053,17 @@ isakmp_cfg_setenv(iph1, envp, envc)
 		plog(LLV_ERROR, LOCATION, NULL, "Cannot set SPLIT_LOCAL\n");
 		return -1;
 	}
+	if (script_env_append(envp, envc,
+	    "SPLIT_LOCAL_CIDR", splitlist_cidr) != 0) {
+		plog(LLV_ERROR, LOCATION, NULL,
+		     "Cannot set SPLIT_LOCAL_CIDR\n");
+		return -1;
+	}
 	if (splitlist != addrlist)
 		racoon_free(splitlist);
-	
+	if (splitlist_cidr != addrlist)
+		racoon_free(splitlist_cidr);
+
 	return 0;
 }
 

@@ -38,7 +38,7 @@
 #ifdef ANDROID_PATCHED
 #include <arpa/inet.h>
 #ifndef MAXNS
-#define MAXNS 2
+#define MAXNS 16
 #endif
 #endif
 

@@ -354,8 +354,9 @@ void splitnet_list_free(list, count)
 	}
 }
 
-char * splitnet_list_2str(list)
+char * splitnet_list_2str(list, splitnet_ipaddr)
 	struct unity_netentry * list;
+	enum splinet_ipaddr splitnet_ipaddr;
 {
 	struct unity_netentry * netentry;
 	char tmp1[40];
@@ -389,8 +390,17 @@ char * splitnet_list_2str(list)
 
 		inet_ntop(AF_INET, &netentry->network.addr4, tmp1, 40);
 		inet_ntop(AF_INET, &netentry->network.mask4, tmp2, 40);
+		if (splitnet_ipaddr == CIDR) {
+			uint32_t tmp3;
+			int cidrmask;
 
-		len += sprintf(str+len, "%s/%s ", tmp1, tmp2);
+			tmp3 = ntohl(netentry->network.mask4.s_addr);
+			for (cidrmask = 0; tmp3 != 0; cidrmask++)
+				tmp3 <<= 1;
+			len += sprintf(str+len, "%s/%d ", tmp1, cidrmask);
+		} else {
+			len += sprintf(str+len, "%s/%s ", tmp1, tmp2);
+		}
 
 		netentry = netentry->next;
 	}
