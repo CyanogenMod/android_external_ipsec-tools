@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <signal.h>
 #include <poll.h>
+#include <unistd.h>
 
 #include "config.h"
 #include "gcmalloc.h"
@@ -195,7 +196,9 @@ int main(int argc, char **argv)
             int i;
             for (i = 0; i < monitors; ++i) {
                 if (pollfds[i].revents & POLLHUP) {
-                    do_plog(LLV_ERROR, "Connection is closed\n", pollfds[i].fd);
+                    do_plog(LLV_INFO, "Connection is closed\n", pollfds[i].fd);
+                    /* Wait for few seconds to consume late messages. */
+                    sleep(5);
                     exit(1);
                 }
                 if (pollfds[i].revents & POLLIN) {
