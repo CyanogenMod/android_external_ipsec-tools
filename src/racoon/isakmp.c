@@ -3123,6 +3123,10 @@ script_env_append(envp, envc, name, value)
 	char **newenvp;
 	int newenvc;
 
+	if (value == NULL) {
+	        value = "";
+	}
+
 	envitem = racoon_malloc(strlen(name) + 1 + strlen(value) + 1);
 	if (envitem == NULL) {
 		plog(LLV_ERROR, LOCATION, NULL,

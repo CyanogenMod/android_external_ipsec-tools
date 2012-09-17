@@ -405,7 +405,7 @@ char * splitnet_list_2str(list, splitnet_ipaddr)
 		netentry = netentry->next;
 	}
 
-	str[len-1]=0;
+	str[len]=0;
 
 	return str;
 }
