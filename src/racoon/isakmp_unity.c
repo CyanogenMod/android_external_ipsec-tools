@@ -365,7 +365,7 @@ char * splitnet_list_2str(list, splitnet_ipaddr)
 	int len;
 
 	/* determine string length */
-	len = 0;
+	len = 1;
 	netentry = list;
 	while (netentry != NULL) {
 
