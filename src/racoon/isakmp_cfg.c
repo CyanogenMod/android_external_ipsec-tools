@@ -108,7 +108,9 @@
 struct isakmp_cfg_config isakmp_cfg_config;
 
 static vchar_t *buffer_cat(vchar_t *s, vchar_t *append);
+#ifndef ANDROID_CHANGES
 static vchar_t *isakmp_cfg_net(struct ph1handle *, struct isakmp_data *);
+#endif
 #if 0
 static vchar_t *isakmp_cfg_void(struct ph1handle *, struct isakmp_data *);
 #endif
@@ -558,6 +560,7 @@ isakmp_cfg_request(iph1, attrpl)
 		     s_isakmp_cfg_type(type), alen);
 
 		switch(type) {
+#ifndef ANDROID_CHANGES
 		case INTERNAL_IP4_ADDRESS:
 		case INTERNAL_IP4_NETMASK:
 		case INTERNAL_IP4_DNS:
@@ -565,6 +568,7 @@ isakmp_cfg_request(iph1, attrpl)
 		case INTERNAL_IP4_SUBNET:
 			reply_attr = isakmp_cfg_net(iph1, attr);
 			break;
+#endif
 
 		case XAUTH_TYPE:
 		case XAUTH_USER_NAME:
@@ -771,6 +775,7 @@ buffer_cat(s, append)
 	return new;
 }
 
+#ifndef ANDROID_CHANGES
 static vchar_t *
 isakmp_cfg_net(iph1, attr)
 	struct ph1handle *iph1;
@@ -911,6 +916,7 @@ retry_source:
 	}
 	return NULL;
 }
+#endif
 
 #if 0
 static vchar_t *
@@ -1294,8 +1300,10 @@ isakmp_cfg_rmstate(iph1)
 {
 	struct isakmp_cfg_state *state = iph1->mode_cfg;
 
+#ifndef ANDROID_CHANGES
 	if (isakmp_cfg_accounting(iph1, ISAKMP_CFG_LOGOUT) != 0)
 		plog(LLV_ERROR, LOCATION, NULL, "Accounting failed\n");
+#endif
 
 	if (state->flags & ISAKMP_CFG_PORT_ALLOCATED)
 		isakmp_cfg_putport(iph1, state->port);	
@@ -1419,6 +1427,7 @@ cleanup_pam(port)
 }
 #endif
 
+#ifndef ANDROID_CHANGES
 /* Accounting, only for RADIUS or PAM */
 static int
 isakmp_cfg_accounting(iph1, inout)
@@ -1439,6 +1448,7 @@ isakmp_cfg_accounting(iph1, inout)
 			iph1->remote, iph1->mode_cfg->login, inout);
 	return 0;
 }
+#endif
 
 #ifdef HAVE_LIBPAM
 int 
@@ -1643,6 +1653,7 @@ isakmp_cfg_radius_common(radius_state, port)
 	Logs the user into the utmp system files.
 */
 
+#ifndef ANDROID_CHANGES
 int
 isakmp_cfg_accounting_system(port, raddr, usr, inout)
 	int port;
@@ -1700,6 +1711,7 @@ isakmp_cfg_accounting_system(port, raddr, usr, inout)
 
 	return 0;
 }
+#endif
 	
 int 
 isakmp_cfg_getconfig(iph1)

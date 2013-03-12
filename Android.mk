@@ -25,11 +25,14 @@ LOCAL_SRC_FILES := \
 	src/racoon/isakmp.c \
 	src/racoon/isakmp_agg.c \
 	src/racoon/isakmp_base.c \
+	src/racoon/isakmp_cfg.c \
 	src/racoon/isakmp_frag.c \
 	src/racoon/isakmp_ident.c \
 	src/racoon/isakmp_inf.c \
 	src/racoon/isakmp_newg.c \
 	src/racoon/isakmp_quick.c \
+	src/racoon/isakmp_unity.c \
+	src/racoon/isakmp_xauth.c \
 	src/racoon/handler.c \
 	src/racoon/pfkey.c \
 	src/racoon/ipsec_doi.c \
@@ -60,7 +63,7 @@ LOCAL_C_INCLUDES += \
 
 LOCAL_SHARED_LIBRARIES := libcutils libcrypto
 
-LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H
+LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DENABLE_HYBRID -DMAXNS=3
 
 LOCAL_MODULE := racoon
 
