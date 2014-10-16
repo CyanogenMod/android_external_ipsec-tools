@@ -62,9 +62,14 @@ LOCAL_STATIC_LIBRARIES := libipsec
 
 LOCAL_SHARED_LIBRARIES := libcutils liblog libcrypto
 
+include $(TOP)/external/openssl/flavor.mk
+ifeq ($(OPENSSL_FLAVOR),BoringSSL)
+	LOCAL_SHARED_LIBRARIES += libkeystore-engine
+endif
+
 LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
 
-LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers -Wno-unused-parameter -Wno-pointer-sign -Werror
 
 LOCAL_MODULE := racoon
 
@@ -78,9 +83,9 @@ LOCAL_SRC_FILES := \
 	src/libipsec/pfkey.c \
 	src/libipsec/ipsec_strerror.c
 
-LOCAL_CFLAGS := -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
+LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
 
-LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers
+LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers -Wno-unused-parameter -Wno-pointer-sign -Werror
 
 LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH) \
