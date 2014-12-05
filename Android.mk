@@ -71,8 +71,12 @@ LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
 
 LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers -Wno-unused-parameter -Wno-pointer-sign -Werror
 
-# Turn off unused XXX warnings. Should be removed/fixed when syncing with upstream. b/18523687
-LOCAL_CFLAGS += -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-label
+# Turn off unused XXX warnings. Should be removed/fixed when syncing with upstream. b/18523687, b/18632512
+LOCAL_CFLAGS += -Wno-unused-variable \
+                -Wno-unused-but-set-variable \
+                -Wno-unused-function \
+                -Wno-unused-label \
+                -Wno-unused-value
 
 # pfkey.c, isakmp.c, remoteconf.c have some K&R warnings,
 # to be ignored until they are fixed from upstream.
