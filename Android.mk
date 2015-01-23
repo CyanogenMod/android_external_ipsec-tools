@@ -55,14 +55,17 @@ LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH)/src/include-glibc \
 	$(LOCAL_PATH)/src/libipsec \
 	$(LOCAL_PATH)/src/racoon \
-	$(LOCAL_PATH)/src/racoon/missing \
-	external/openssl/include
+	$(LOCAL_PATH)/src/racoon/missing
 
 LOCAL_STATIC_LIBRARIES := libipsec
 
 LOCAL_SHARED_LIBRARIES := libcutils liblog libcrypto
 
-include $(TOP)/external/openssl/flavor.mk
+ifneq (,$(wildcard $(TOP)/external/boringssl/flavor.mk))
+	include $(TOP)/external/boringssl/flavor.mk
+else
+	include $(TOP)/external/openssl/flavor.mk
+endif
 ifeq ($(OPENSSL_FLAVOR),BoringSSL)
 	LOCAL_SHARED_LIBRARIES += libkeystore-engine
 endif
