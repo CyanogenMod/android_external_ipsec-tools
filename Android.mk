@@ -70,7 +70,7 @@ ifeq ($(OPENSSL_FLAVOR),BoringSSL)
 	LOCAL_SHARED_LIBRARIES += libkeystore-engine
 endif
 
-LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H
+LOCAL_CFLAGS := -DANDROID_CHANGES -DHAVE_CONFIG_H -DHAVE_OPENSSL_ENGINE_H -D_BSD_SOURCE=1
 
 LOCAL_CFLAGS += -Wno-sign-compare -Wno-missing-field-initializers -Wno-unused-parameter -Wno-pointer-sign -Werror
 
