@@ -87,6 +87,8 @@ LOCAL_CLANG_CFLAGS += -Wno-knr-promoted-parameter
 
 LOCAL_MODULE := racoon
 
+LOCAL_INIT_RC := racoon.rc
+
 include $(BUILD_EXECUTABLE)
 
 ##########################################################################
