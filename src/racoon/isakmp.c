@@ -1114,10 +1114,8 @@ isakmp_ph1begin_i(rmconf, remote, local)
 
 /* new negotiation of phase 1 for responder */
 static int
-isakmp_ph1begin_r(msg, remote, local, etype)
-	vchar_t *msg;
-	struct sockaddr *remote, *local;
-	u_int8_t etype;
+isakmp_ph1begin_r(vchar_t *msg, struct sockaddr *remote,
+                  struct sockaddr *local, u_int8_t etype)
 {
 	struct isakmp *isakmp = (struct isakmp *)msg->v;
 	struct remoteconf *rmconf;
