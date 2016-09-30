@@ -116,8 +116,8 @@
 #  ifndef SOL_UDP
 #   define SOL_UDP 17
 #  endif
-#if defined(ANDROID_CHANGES) && !defined(__linux)
-#define __linux
+#if defined(__ANDROID__)
+#include <netinet/udp.h>
 #endif
 # endif /* __linux__ */
 # if defined(__NetBSD__) || defined(__FreeBSD__) ||	\
